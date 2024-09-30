@@ -65,6 +65,12 @@ $user = \Activitypub\Collection\Users::get_by_id( \get_current_user_id() ); ?>
 					data-choose-text="<?php \esc_attr_e( 'Choose a Header Image', 'activitypub' ); ?>"
 					data-update-text="<?php \esc_attr_e( 'Change Header Icon', 'activitypub' ); ?>"
 					data-update="<?php \esc_attr_e( 'Set as Header Image', 'activitypub' ); ?>"
+					<?php
+					// We only need to constrain the user_id for users who can't edit others' posts.
+					if ( ! \current_user_can( 'edit_others_posts' ) ) {
+						printf( 'data-user-id="%s"', esc_attr( \get_current_user_id() ) );
+					}
+					?>
 					data-state="<?php echo \esc_attr( (int) $header_image ); ?>">
 					<?php if ( (int) $header_image ) : ?>
 						<?php \esc_html_e( 'Change Header Image', 'activitypub' ); ?>
@@ -86,7 +92,11 @@ $user = \Activitypub\Collection\Users::get_by_id( \get_current_user_id() ); ?>
 				<label><?php \esc_html_e( 'Extra Fields', 'activitypub' ); ?></label>
 			</th>
 			<td>
-				<p class="description"><?php \esc_html_e( 'Your homepage, social profiles, pronouns, age, anything you want.', 'activitypub' ); ?></p>
+				<p class="description">
+					<?php
+						\esc_html_e( 'Your homepage, social profiles, pronouns, age, anything you want.', 'activitypub' );
+					?>
+				</p>
 
 				<table class="widefat striped activitypub-extra-fields" role="presentation" style="margin: 15px 0;">
 				<?php
