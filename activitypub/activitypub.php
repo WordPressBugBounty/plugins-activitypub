@@ -3,7 +3,7 @@
  * Plugin Name: ActivityPub
  * Plugin URI: https://github.com/pfefferle/wordpress-activitypub/
  * Description: The ActivityPub protocol is a decentralized social networking protocol based upon the ActivityStreams 2.0 data format.
- * Version: 3.3.1
+ * Version: 3.3.2
  * Author: Matthias Pfefferle & Automattic
  * Author URI: https://automattic.com/
  * License: MIT
@@ -23,7 +23,7 @@ use function Activitypub\site_supports_blocks;
 require_once __DIR__ . '/includes/compat.php';
 require_once __DIR__ . '/includes/functions.php';
 
-\define( 'ACTIVITYPUB_PLUGIN_VERSION', '3.3.1' );
+\define( 'ACTIVITYPUB_PLUGIN_VERSION', '3.3.2' );
 
 /**
  * Initialize the plugin constants.
@@ -112,7 +112,7 @@ function plugin_init() {
 
 		if ( strncmp( $full_class, $base, strlen( $base ) ) === 0 ) {
 			$maybe_uppercase = str_replace( $base, '', $full_class );
-			$class = strtolower( $maybe_uppercase );
+			$class           = strtolower( $maybe_uppercase );
 			// All classes should be capitalized. If this is instead looking for a lowercase method, we ignore that.
 			if ( $maybe_uppercase === $class ) {
 				return;
@@ -144,7 +144,7 @@ function plugin_init() {
  * Add plugin settings link
  */
 function plugin_settings_link( $actions ) {
-	$settings_link = array();
+	$settings_link   = array();
 	$settings_link[] = \sprintf(
 		'<a href="%1s">%2s</a>',
 		\menu_page_url( 'activitypub', false ),
