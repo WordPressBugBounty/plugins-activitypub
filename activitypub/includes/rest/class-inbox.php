@@ -215,11 +215,6 @@ class Inbox {
 			'type' => 'integer',
 		);
 
-		$params['user_id'] = array(
-			'required' => true,
-			'type'     => 'string',
-		);
-
 		return $params;
 	}
 
@@ -230,11 +225,6 @@ class Inbox {
 	 */
 	public static function user_inbox_post_parameters() {
 		$params = array();
-
-		$params['user_id'] = array(
-			'required' => true,
-			'type'     => 'string',
-		);
 
 		$params['id'] = array(
 			'required'          => true,

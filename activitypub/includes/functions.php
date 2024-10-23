@@ -11,6 +11,7 @@ use WP_Error;
 use Activitypub\Activity\Activity;
 use Activitypub\Collection\Followers;
 use Activitypub\Collection\Users;
+use Activitypub\Transformer\Post;
 
 /**
  * Returns the ActivityPub default JSON-context.
@@ -401,6 +402,31 @@ function is_activitypub_request() {
 }
 
 /**
+ * Check if a post is disabled for ActivityPub.
+ *
+ * @param mixed $post The post object or ID.
+ *
+ * @return boolean True if the post is disabled, false otherwise.
+ */
+function is_post_disabled( $post ) {
+	$post       = \get_post( $post );
+	$disabled   = false;
+	$visibility = \get_post_meta( $post->ID, 'activitypub_content_visibility', true );
+
+	if ( ACTIVITYPUB_CONTENT_VISIBILITY_LOCAL === $visibility ) {
+		$disabled = true;
+	}
+
+	/*
+	 * Allow plugins to disable posts for ActivityPub.
+	 *
+	 * @param boolean  $disabled True if the post is disabled, false otherwise.
+	 * @param \WP_Post $post     The post object.
+	 */
+	return \apply_filters( 'activitypub_is_post_disabled', $disabled, $post );
+}
+
+/**
  * This function checks if a user is disabled for ActivityPub.
  *
  * @param int $user_id The user ID.
@@ -408,50 +434,50 @@ function is_activitypub_request() {
  * @return boolean True if the user is disabled, false otherwise.
  */
 function is_user_disabled( $user_id ) {
-	$return = false;
+	$disabled = false;
 
 	switch ( $user_id ) {
 		// if the user is the application user, it's always enabled.
 		case \Activitypub\Collection\Users::APPLICATION_USER_ID:
-			$return = false;
+			$disabled = false;
 			break;
 		// if the user is the blog user, it's only enabled in single-user mode.
 		case \Activitypub\Collection\Users::BLOG_USER_ID:
 			if ( is_user_type_disabled( 'blog' ) ) {
-				$return = true;
+				$disabled = true;
 				break;
 			}
 
-			$return = false;
+			$disabled = false;
 			break;
 		// if the user is any other user, it's enabled if it can publish posts.
 		default:
 			if ( ! \get_user_by( 'id', $user_id ) ) {
-				$return = true;
+				$disabled = true;
 				break;
 			}
 
 			if ( is_user_type_disabled( 'user' ) ) {
-				$return = true;
+				$disabled = true;
 				break;
 			}
 
 			if ( ! \user_can( $user_id, 'activitypub' ) ) {
-				$return = true;
+				$disabled = true;
 				break;
 			}
 
-			$return = false;
+			$disabled = false;
 			break;
 	}
 
 	/**
 	 * Allow plugins to disable users for ActivityPub.
 	 *
-	 * @param boolean $return  True if the user is disabled, false otherwise.
-	 * @param int     $user_id The User-ID.
+	 * @param boolean $disabled True if the user is disabled, false otherwise.
+	 * @param int     $user_id  The User-ID.
 	 */
-	return apply_filters( 'activitypub_is_user_disabled', $return, $user_id );
+	return apply_filters( 'activitypub_is_user_disabled', $disabled, $user_id );
 }
 
 /**
@@ -469,45 +495,45 @@ function is_user_type_disabled( $type ) {
 		case 'blog':
 			if ( \defined( 'ACTIVITYPUB_SINGLE_USER_MODE' ) ) {
 				if ( ACTIVITYPUB_SINGLE_USER_MODE ) {
-					$return = false;
+					$disabled = false;
 					break;
 				}
 			}
 
 			if ( \defined( 'ACTIVITYPUB_DISABLE_BLOG_USER' ) ) {
-				$return = ACTIVITYPUB_DISABLE_BLOG_USER;
+				$disabled = ACTIVITYPUB_DISABLE_BLOG_USER;
 				break;
 			}
 
-			if ( '1' !== \get_option( 'activitypub_enable_blog_user', '0' ) ) {
-				$return = true;
+			if ( ACTIVITYPUB_ACTOR_MODE === \get_option( 'activitypub_actor_mode', ACTIVITYPUB_ACTOR_MODE ) ) {
+				$disabled = true;
 				break;
 			}
 
-			$return = false;
+			$disabled = false;
 			break;
 		case 'user':
 			if ( \defined( 'ACTIVITYPUB_SINGLE_USER_MODE' ) ) {
 				if ( ACTIVITYPUB_SINGLE_USER_MODE ) {
-					$return = true;
+					$disabled = true;
 					break;
 				}
 			}
 
 			if ( \defined( 'ACTIVITYPUB_DISABLE_USER' ) ) {
-				$return = ACTIVITYPUB_DISABLE_USER;
+				$disabled = ACTIVITYPUB_DISABLE_USER;
 				break;
 			}
 
-			if ( '1' !== \get_option( 'activitypub_enable_users', '1' ) ) {
-				$return = true;
+			if ( ACTIVITYPUB_BLOG_MODE === \get_option( 'activitypub_actor_mode', ACTIVITYPUB_ACTOR_MODE ) ) {
+				$disabled = true;
 				break;
 			}
 
-			$return = false;
+			$disabled = false;
 			break;
 		default:
-			$return = new WP_Error(
+			$disabled = new WP_Error(
 				'activitypub_wrong_user_type',
 				__( 'Wrong user type', 'activitypub' ),
 				array( 'status' => 400 )
@@ -518,10 +544,10 @@ function is_user_type_disabled( $type ) {
 	/**
 	 * Allow plugins to disable user types for ActivityPub.
 	 *
-	 * @param boolean $return True if the user type is disabled, false otherwise.
-	 * @param string  $type   The User-Type.
+	 * @param boolean $disabled True if the user type is disabled, false otherwise.
+	 * @param string  $type     The User-Type.
 	 */
-	return apply_filters( 'activitypub_is_user_type_disabled', $return, $type );
+	return apply_filters( 'activitypub_is_user_type_disabled', $disabled, $type );
 }
 
 /**
@@ -550,7 +576,10 @@ function site_supports_blocks() {
 		return false;
 	}
 
-	if ( ! \function_exists( 'register_block_type_from_metadata' ) ) {
+	if (
+		! \function_exists( 'register_block_type_from_metadata' ) ||
+		! \function_exists( 'do_blocks' )
+	) {
 		return false;
 	}
 
@@ -1136,15 +1165,43 @@ function normalize_host( $host ) {
 }
 
 /**
+ * Get the reply intent URI as a JavaScript URI.
+ *
+ * @return string The reply intent URI.
+ */
+function get_reply_intent_js() {
+	return sprintf(
+		'javascript:(()=>{window.open(\'%s\'+encodeURIComponent(window.location.href));})();',
+		get_reply_intent_url()
+	);
+}
+
+/**
  * Get the reply intent URI.
  *
  * @return string The reply intent URI.
  */
-function get_reply_intent_uri() {
-	return sprintf(
-		'javascript:(()=>{window.open(\'%s\'+encodeURIComponent(window.location.href));})();',
-		esc_url( \admin_url( 'post-new.php?in_reply_to=' ) )
-	);
+function get_reply_intent_url() {
+	/**
+	 * Filters the reply intent parameters.
+	 *
+	 * @param array $params The reply intent parameters.
+	 */
+	$params = \apply_filters( 'activitypub_reply_intent_params', array() );
+
+	$params += array( 'in_reply_to' => '' );
+	$query   = \http_build_query( $params );
+	$path    = 'post-new.php?' . $query;
+	$url     = \admin_url( $path );
+
+	/**
+	 * Filters the reply intent URL.
+	 *
+	 * @param string $url The reply intent URL.
+	 */
+	$url = \apply_filters( 'activitypub_reply_intent_url', $url );
+
+	return esc_url_raw( $url );
 }
 
 /**
@@ -1305,4 +1362,115 @@ function get_content_warning( $post_id ) {
 	}
 
 	return $warning;
+}
+
+/**
+ * Get the ActivityPub ID of a User by the WordPress User ID.
+ *
+ * @param int $id The WordPress User ID.
+ *
+ * @return string The ActivityPub ID (a URL) of the User.
+ */
+function get_user_id( $id ) {
+	$user = Users::get_by_id( $id );
+
+	if ( ! $user ) {
+		return false;
+	}
+
+	return $user->get_id();
+}
+
+/**
+ * Get the ActivityPub ID of a Post by the WordPress Post ID.
+ *
+ * @param int $id The WordPress Post ID.
+ *
+ * @return string The ActivityPub ID (a URL) of the Post.
+ */
+function get_post_id( $id ) {
+	$post = get_post( $id );
+
+	if ( ! $post ) {
+		return false;
+	}
+
+	$transformer = new Post( $post );
+	return $transformer->get_id();
+}
+
+/**
+ * Check if a URL is from the same domain as the site.
+ *
+ * @param string $url The URL to check.
+ *
+ * @return boolean True if the URL is from the same domain, false otherwise.
+ */
+function is_same_domain( $url ) {
+	$remote = \wp_parse_url( $url, PHP_URL_HOST );
+
+	if ( ! $remote ) {
+		return false;
+	}
+
+	$remote = normalize_host( $remote );
+	$self   = normalize_host( home_host() );
+
+	return $remote === $self;
+}
+
+/**
+ * Get the visibility of a post.
+ *
+ * @param int $post_id The post ID.
+ *
+ * @return string|false The visibility of the post or false if not found.
+ */
+function get_content_visibility( $post_id ) {
+	$post = get_post( $post_id );
+	if ( ! $post ) {
+		return false;
+	}
+
+	$visibility  = get_post_meta( $post->ID, 'activitypub_content_visibility', true );
+	$_visibility = ACTIVITYPUB_CONTENT_VISIBILITY_PUBLIC;
+	$options     = array(
+		ACTIVITYPUB_CONTENT_VISIBILITY_QUIET_PUBLIC,
+		ACTIVITYPUB_CONTENT_VISIBILITY_LOCAL,
+	);
+
+	if ( in_array( $visibility, $options, true ) ) {
+		$_visibility = $visibility;
+	}
+
+	return \apply_filters( 'activitypub_content_visibility', $_visibility, $post );
+}
+
+/**
+ * Retrieves the Host for the current site where the front end is accessible.
+ *
+ * @return string The host for the current site.
+ */
+function home_host() {
+	return \wp_parse_url( \home_url(), PHP_URL_HOST );
+}
+
+/**
+ * Returns the website hosts allowed to credit this blog.
+ *
+ * @return array|null The attribution domains or null if not found.
+ */
+function get_attribution_domains() {
+	if ( '1' !== \get_option( 'activitypub_use_opengraph', '1' ) ) {
+		return null;
+	}
+
+	$domains = \get_option( 'activitypub_attribution_domains', home_host() );
+	$domains = explode( PHP_EOL, $domains );
+
+	if ( ! $domains ) {
+		$domains = null;
+	}
+
+	return $domains;
 }

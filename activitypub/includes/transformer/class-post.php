@@ -15,9 +15,10 @@ use Activitypub\Collection\Users;
 use function Activitypub\esc_hashtag;
 use function Activitypub\is_single_user;
 use function Activitypub\get_enclosures;
+use function Activitypub\get_content_warning;
 use function Activitypub\site_supports_blocks;
 use function Activitypub\generate_post_summary;
-use function Activitypub\get_content_warning;
+use function Activitypub\get_content_visibility;
 
 /**
  * WordPress Post Transformer.
@@ -77,6 +78,12 @@ class Post extends Base {
 			$object->set_summary_map( null );
 		}
 
+		// Change order if visibility is "Quiet public".
+		if ( ACTIVITYPUB_CONTENT_VISIBILITY_QUIET_PUBLIC === get_content_visibility( $post ) ) {
+			$object->set_to( $this->get_cc() );
+			$object->set_cc( $this->get_to() );
+		}
+
 		return $object;
 	}
 
@@ -114,7 +121,15 @@ class Post extends Base {
 	 *
 	 * @return string The Posts ID.
 	 */
-	protected function get_id() {
+	public function get_id() {
+		$last_legacy_id = (int) \get_option( 'activitypub_last_post_with_permalink_as_id', 0 );
+		$post_id        = $this->wp_object->ID;
+
+		if ( $post_id > $last_legacy_id ) {
+			// Generate URI based on post ID.
+			return \add_query_arg( 'p', $post_id, \trailingslashit( \home_url() ) );
+		}
+
 		return $this->get_url();
 	}
 
@@ -154,7 +169,7 @@ class Post extends Base {
 	 * @return string The User-URL.
 	 */
 	protected function get_attributed_to() {
-		return $this->get_actor_object()->get_url();
+		return $this->get_actor_object()->get_id();
 	}
 
 	/**
@@ -642,9 +657,15 @@ class Post extends Base {
 			return \ucfirst( $post_format_setting );
 		}
 
-		$has_title = post_type_supports( $this->wp_object->post_type, 'title' );
+		$has_title = \post_type_supports( $this->wp_object->post_type, 'title' );
+		$content   = \wp_strip_all_tags( $this->wp_object->post_content );
 
-		if ( ! $has_title ) {
+		// Check if the post has a title.
+		if (
+			! $has_title ||
+			! $this->wp_object->post_title ||
+			\strlen( $content ) <= ACTIVITYPUB_NOTE_LENGTH
+		) {
 			return 'Note';
 		}
 
@@ -681,6 +702,19 @@ class Post extends Base {
 	}
 
 	/**
+	 * Returns the recipient of the post.
+	 *
+	 * @see https://www.w3.org/TR/activitystreams-vocabulary/#dfn-to
+	 *
+	 * @return array The recipient URLs of the post.
+	 */
+	public function get_to() {
+		return array(
+			'https://www.w3.org/ns/activitystreams#Public',
+		);
+	}
+
+	/**
 	 * Returns a list of Mentions, used in the Post.
 	 *
 	 * @see https://docs.joinmastodon.org/spec/activitypub/#Mention
@@ -688,7 +722,9 @@ class Post extends Base {
 	 * @return array The list of Mentions.
 	 */
 	protected function get_cc() {
-		$cc = array();
+		$cc = array(
+			$this->get_actor_object()->get_followers(),
+		);
 
 		$mentions = $this->get_mentions();
 		if ( $mentions ) {
@@ -944,20 +980,6 @@ class Post extends Base {
 		}
 
 		return null;
-	}
-
-	/**
-	 * Returns the recipient of the post.
-	 *
-	 * @see https://www.w3.org/TR/activitystreams-vocabulary/#dfn-to
-	 *
-	 * @return array The recipient URLs of the post.
-	 */
-	public function get_to() {
-		return array(
-			'https://www.w3.org/ns/activitystreams#Public',
-			$this->get_actor_object()->get_followers(),
-		);
 	}
 
 	/**

@@ -102,7 +102,7 @@ class Followers {
 				if ( 'full' === $context ) {
 					return $item->to_array( false );
 				}
-				return $item->get_url();
+				return $item->get_id();
 			},
 			$data['followers']
 		);
@@ -136,11 +136,6 @@ class Followers {
 			'type'    => 'string',
 			'default' => 'desc',
 			'enum'    => array( 'asc', 'desc' ),
-		);
-
-		$params['user_id'] = array(
-			'required' => true,
-			'type'     => 'string',
 		);
 
 		$params['context'] = array(

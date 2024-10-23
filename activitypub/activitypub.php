@@ -3,7 +3,7 @@
  * Plugin Name: ActivityPub
  * Plugin URI: https://github.com/pfefferle/wordpress-activitypub/
  * Description: The ActivityPub protocol is a decentralized social networking protocol based upon the ActivityStreams 2.0 data format.
- * Version: 3.3.3
+ * Version: 4.0.0
  * Author: Matthias Pfefferle & Automattic
  * Author URI: https://automattic.com/
  * License: MIT
@@ -22,13 +22,14 @@ use WP_CLI;
 require_once __DIR__ . '/includes/compat.php';
 require_once __DIR__ . '/includes/functions.php';
 
-\define( 'ACTIVITYPUB_PLUGIN_VERSION', '3.3.3' );
+\define( 'ACTIVITYPUB_PLUGIN_VERSION', '4.0.0' );
 
 /**
  * Initialize the plugin constants.
  */
 \defined( 'ACTIVITYPUB_REST_NAMESPACE' ) || \define( 'ACTIVITYPUB_REST_NAMESPACE', 'activitypub/1.0' );
 \defined( 'ACTIVITYPUB_EXCERPT_LENGTH' ) || \define( 'ACTIVITYPUB_EXCERPT_LENGTH', 400 );
+\defined( 'ACTIVITYPUB_NOTE_LENGTH' ) || \define( 'ACTIVITYPUB_NOTE_LENGTH', 400 );
 \defined( 'ACTIVITYPUB_SHOW_PLUGIN_RECOMMENDATIONS' ) || \define( 'ACTIVITYPUB_SHOW_PLUGIN_RECOMMENDATIONS', true );
 \defined( 'ACTIVITYPUB_MAX_IMAGE_ATTACHMENTS' ) || \define( 'ACTIVITYPUB_MAX_IMAGE_ATTACHMENTS', 3 );
 \defined( 'ACTIVITYPUB_HASHTAGS_REGEXP' ) || \define( 'ACTIVITYPUB_HASHTAGS_REGEXP', '(?:(?<=\s)|(?<=<p>)|(?<=<br>)|^)#([A-Za-z0-9_]+)(?:(?=\s|[[:punct:]]|$))' );
@@ -45,6 +46,17 @@ require_once __DIR__ . '/includes/functions.php';
 \defined( 'ACTIVITYPUB_SEND_VARY_HEADER' ) || \define( 'ACTIVITYPUB_SEND_VARY_HEADER', false );
 \defined( 'ACTIVITYPUB_DEFAULT_OBJECT_TYPE' ) || \define( 'ACTIVITYPUB_DEFAULT_OBJECT_TYPE', 'note' );
 
+// Define Actor-Modes for the plugin.
+\define( 'ACTIVITYPUB_ACTOR_MODE', 'actor' );
+\define( 'ACTIVITYPUB_BLOG_MODE', 'blog' );
+\define( 'ACTIVITYPUB_ACTOR_AND_BLOG_MODE', 'actor_blog' );
+
+// Post visibility constants.
+\define( 'ACTIVITYPUB_CONTENT_VISIBILITY_PUBLIC', '' );
+\define( 'ACTIVITYPUB_CONTENT_VISIBILITY_QUIET_PUBLIC', 'quiet_public' );
+\define( 'ACTIVITYPUB_CONTENT_VISIBILITY_LOCAL', 'local' );
+
+// Plugin related constants.
 \define( 'ACTIVITYPUB_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 \define( 'ACTIVITYPUB_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
 \define( 'ACTIVITYPUB_PLUGIN_FILE', plugin_dir_path( __FILE__ ) . '/' . basename( __FILE__ ) );

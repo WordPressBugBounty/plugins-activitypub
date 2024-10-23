@@ -135,9 +135,9 @@ class Activity_Dispatcher {
 		// Build the update.
 		$activity = new Activity();
 		$activity->set_type( 'Update' );
-		$activity->set_actor( $user->get_url() );
-		$activity->set_object( $user->get_url() );
-		$activity->set_to( 'https://www.w3.org/ns/activitystreams#Public' );
+		$activity->set_actor( $user->get_id() );
+		$activity->set_object( $user->get_id() );
+		$activity->set_to( array( 'https://www.w3.org/ns/activitystreams#Public' ) );
 
 		// Send the update.
 		self::send_activity_to_followers( $activity, $user_id, $user );
@@ -268,9 +268,21 @@ class Activity_Dispatcher {
 	 * @return array The filtered Inboxes.
 	 */
 	public static function add_inboxes_by_mentioned_actors( $inboxes, $user_id, $activity ) {
-		$cc = $activity->get_cc();
-		if ( $cc ) {
-			$mentioned_inboxes = Mention::get_inboxes( $cc );
+		$cc = $activity->get_cc() ?? array();
+		$to = $activity->get_to() ?? array();
+
+		$audience = array_merge( $cc, $to );
+
+		// Remove "public placeholder" and "same domain" from the audience.
+		$audience = array_filter(
+			$audience,
+			function ( $actor ) {
+				return 'https://www.w3.org/ns/activitystreams#Public' !== $actor && ! is_same_domain( $actor );
+			}
+		);
+
+		if ( $audience ) {
+			$mentioned_inboxes = Mention::get_inboxes( $audience );
 
 			return array_merge( $inboxes, $mentioned_inboxes );
 		}
