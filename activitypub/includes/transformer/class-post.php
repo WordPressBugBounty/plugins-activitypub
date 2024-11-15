@@ -10,7 +10,7 @@ namespace Activitypub\Transformer;
 use WP_Post;
 use Activitypub\Shortcodes;
 use Activitypub\Model\Blog;
-use Activitypub\Collection\Users;
+use Activitypub\Collection\Actors;
 
 use function Activitypub\esc_hashtag;
 use function Activitypub\is_single_user;
@@ -113,7 +113,7 @@ class Post extends Base {
 			return $blog_user;
 		}
 
-		$user = Users::get_by_id( $this->wp_object->post_author );
+		$user = Actors::get_by_id( $this->wp_object->post_author );
 
 		if ( $user && ! is_wp_error( $user ) ) {
 			$this->actor_object = $user;
@@ -177,6 +177,59 @@ class Post extends Base {
 	 */
 	protected function get_attributed_to() {
 		return $this->get_actor_object()->get_id();
+	}
+
+	/**
+	 * Returns the featured image as `Image`.
+	 *
+	 * @return array|null The Image or null if no image is available.
+	 */
+	protected function get_image() {
+		$post_id = $this->wp_object->ID;
+
+		// List post thumbnail first if this post has one.
+		if (
+			! \function_exists( 'has_post_thumbnail' ) ||
+			! \has_post_thumbnail( $post_id )
+		) {
+			return null;
+		}
+
+		$id         = \get_post_thumbnail_id( $post_id );
+		$image_size = 'large';
+
+		/**
+		 * Filter the image URL returned for each post.
+		 *
+		 * @param array|false $thumbnail  The image URL, or false if no image is available.
+		 * @param int         $id         The attachment ID.
+		 * @param string      $image_size The image size to retrieve. Set to 'large' by default.
+		 */
+		$thumbnail = apply_filters(
+			'activitypub_get_image',
+			self::get_wordpress_attachment( $id, $image_size ),
+			$id,
+			$image_size
+		);
+
+		if ( ! $thumbnail ) {
+			return null;
+		}
+
+		$mime_type = \get_post_mime_type( $id );
+
+		$image = array(
+			'type'      => 'Image',
+			'url'       => \esc_url( $thumbnail[0] ),
+			'mediaType' => \esc_attr( $mime_type ),
+		);
+
+		$alt = \get_post_meta( $id, '_wp_attachment_image_alt', true );
+		if ( $alt ) {
+			$image['name'] = \wp_strip_all_tags( \html_entity_decode( $alt ) );
+		}
+
+		return $image;
 	}
 
 	/**
@@ -676,33 +729,14 @@ class Post extends Base {
 			return 'Note';
 		}
 
-		// Default to Article.
-		$object_type = 'Article';
-		$post_format = 'standard';
+		// Default to Note.
+		$object_type = 'Note';
+		$post_type   = \get_post_type( $this->wp_object );
 
-		if ( \get_theme_support( 'post-formats' ) ) {
-			$post_format = \get_post_format( $this->wp_object );
-		}
-
-		$post_type = \get_post_type( $this->wp_object );
-		switch ( $post_type ) {
-			case 'post':
-				switch ( $post_format ) {
-					case 'standard':
-					case '':
-						$object_type = 'Article';
-						break;
-					default:
-						$object_type = 'Note';
-						break;
-				}
-				break;
-			case 'page':
-				$object_type = 'Page';
-				break;
-			default:
-				$object_type = 'Article';
-				break;
+		if ( 'page' === $post_type ) {
+			$object_type = 'Page';
+		} elseif ( ! \get_post_format( $this->wp_object ) ) {
+			$object_type = 'Article';
 		}
 
 		return $object_type;
@@ -830,15 +864,15 @@ class Post extends Base {
 
 		$title = \get_the_title( $this->wp_object->ID );
 
-		if ( $title ) {
-			return \wp_strip_all_tags(
-				\html_entity_decode(
-					$title
-				)
-			);
+		if ( ! $title ) {
+			return null;
 		}
 
-		return null;
+		return \wp_strip_all_tags(
+			\html_entity_decode(
+				$title
+			)
+		);
 	}
 
 	/**

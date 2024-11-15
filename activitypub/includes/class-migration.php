@@ -7,7 +7,7 @@
 
 namespace Activitypub;
 
-use Activitypub\Collection\Users;
+use Activitypub\Collection\Actors;
 use Activitypub\Collection\Followers;
 
 /**
@@ -31,10 +31,14 @@ class Migration {
 	 * This is the version that the database structure will be updated to.
 	 * It is the same as the plugin version.
 	 *
+	 * @deprecated 4.2.0 Use constant ACTIVITYPUB_PLUGIN_VERSION directly.
+	 *
 	 * @return string The target version.
 	 */
 	public static function get_target_version() {
-		return get_plugin_version();
+		_deprecated_function( __FUNCTION__, '4.2.0', 'ACTIVITYPUB_PLUGIN_VERSION' );
+
+		return ACTIVITYPUB_PLUGIN_VERSION;
 	}
 
 	/**
@@ -90,7 +94,7 @@ class Migration {
 	public static function is_latest_version() {
 		return (bool) \version_compare(
 			self::get_version(),
-			self::get_target_version(),
+			ACTIVITYPUB_PLUGIN_VERSION,
 			'=='
 		);
 	}
@@ -114,7 +118,7 @@ class Migration {
 		// Check for inital migration.
 		if ( ! $version_from_db ) {
 			self::add_default_settings();
-			$version_from_db = self::get_target_version();
+			$version_from_db = ACTIVITYPUB_PLUGIN_VERSION;
 		}
 
 		// Schedule the async migration.
@@ -149,9 +153,9 @@ class Migration {
 		 * @param string $version_from_db The version from which to migrate.
 		 * @param string $target_version  The target version to migrate to.
 		 */
-		\do_action( 'activitypub_migrate', $version_from_db, self::get_target_version() );
+		\do_action( 'activitypub_migrate', $version_from_db, ACTIVITYPUB_PLUGIN_VERSION );
 
-		\update_option( 'activitypub_db_version', self::get_target_version() );
+		\update_option( 'activitypub_db_version', ACTIVITYPUB_PLUGIN_VERSION );
 
 		self::unlock();
 	}
@@ -315,7 +319,7 @@ class Migration {
 			}
 		}
 
-		$followers = Followers::get_followers( Users::BLOG_USER_ID );
+		$followers = Followers::get_followers( Actors::BLOG_USER_ID );
 
 		if ( $followers ) {
 			\update_option( 'activitypub_use_permalink_as_id_for_blog', '1' );
