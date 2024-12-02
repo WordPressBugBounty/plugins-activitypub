@@ -1,9 +1,9 @@
 === ActivityPub ===
-Contributors: automattic, pfefferle, mediaformat, mattwiebe, akirk, jeherve, nuriapena, cavalierlife
+Contributors: automattic, pfefferle, mattwiebe, obenland, akirk, jeherve, mediaformat, nuriapena, cavalierlife, andremenrath
 Tags: OStatus, fediverse, activitypub, activitystream
 Requires at least: 5.5
 Tested up to: 6.7
-Stable tag: 4.2.1
+Stable tag: 4.3.0
 Requires PHP: 7.0
 License: MIT
 License URI: http://opensource.org/licenses/MIT
@@ -57,24 +57,6 @@ So what’s the process?
 = tl;dr =
 
 This plugin connects your WordPress blog to popular social platforms like Mastodon, making your posts more accessible to a wider audience. Once installed, your blog can be followed by users on these platforms, allowing them to receive your new posts in their feeds.
-
-= What is the status of this plugin? =
-
-Implemented:
-
-* blog profile pages (JSON representation)
-* author profile pages (JSON representation)
-* custom links
-* functional inbox/outbox
-* follow (accept follows)
-* share posts
-* receive comments/reactions
-* signature verification
-* threaded comments support
-
-To implement:
-
-* replace shortcodes with blocks for layout
 
 = What is "ActivityPub for WordPress" =
 
@@ -149,6 +131,24 @@ For reasons of data protection, it is not possible to see the followers of other
 5. A Blog-Profile on Mastodon
 
 == Changelog ==
+
+= 4.3.0 =
+
+* Added: A `pre_activitypub_get_upload_baseurl` filter
+* Added: Fediverse Preview on post-overview page
+* Added: GitHub action to enforce Changelog updates
+* Added: New contributors
+* Improved: Basic enclosure validation
+* Improved: More User -> Actor renaming
+* Improved: Outsource Constants to a separate file
+* Improved: Better handling of `readme.txt` and `README.md`
+* Fixed: editor error when switching to edit a synced Pattern
+* Fixed: Fediverse preview showing `preferredUsername` instead of `name`
+* Fixed: Potential fatal error in Enable Mastodon Apps
+* Fixed: Broken escaping of Usernames in Actor-JSON
+* Fixed: Show Followers name instead of avatar on mobile view
+* Fixed: Missing attachement-type for enclosures
+* Fixed: Prevention against self pings
 
 = 4.2.1 =
 
