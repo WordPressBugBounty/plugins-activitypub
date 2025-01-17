@@ -3,7 +3,7 @@ Contributors: automattic, pfefferle, mattwiebe, obenland, akirk, jeherve, mediaf
 Tags: OStatus, fediverse, activitypub, activitystream
 Requires at least: 5.5
 Tested up to: 6.7
-Stable tag: 4.7.1
+Stable tag: 4.7.2
 Requires PHP: 7.2
 License: MIT
 License URI: http://opensource.org/licenses/MIT
@@ -70,7 +70,7 @@ In order for webfinger to work, it must be mapped to the root directory of the U
 
 Add the following to the .htaccess file in the root directory:
 
-	RedirectMatch "^\/\.well-known/(webfinger|nodeinfo|x-nodeinfo2)(.*)$" /blog/.well-known/$1$2
+	RedirectMatch "^\/\.well-known/(webfinger|nodeinfo)(.*)$" /blog/.well-known/$1$2
 
 Where 'blog' is the path to the subdirectory at which your blog resides.
 
@@ -131,6 +131,13 @@ For reasons of data protection, it is not possible to see the followers of other
 5. A Blog-Profile on Mastodon
 
 == Changelog ==
+
+= 4.7.2 =
+
+* Added: Support for WPML post locale
+* Removed: Built-in support for nodeinfo2. Use the [NodeInfo plugin](https://wordpress.org/plugins/nodeinfo/) instead.
+* Fixed: More robust handling of `_activityPubOptions` in scripts, using a `useOptions()` helper.
+* Fixed: Flush post caches after Followers migration.
 
 = 4.7.1 =
 
