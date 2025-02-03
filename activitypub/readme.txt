@@ -3,7 +3,7 @@ Contributors: automattic, pfefferle, mattwiebe, obenland, akirk, jeherve, mediaf
 Tags: OStatus, fediverse, activitypub, activitystream
 Requires at least: 5.5
 Tested up to: 6.7
-Stable tag: 4.7.3
+Stable tag: 5.0.0
 Requires PHP: 7.2
 License: MIT
 License URI: http://opensource.org/licenses/MIT
@@ -33,7 +33,6 @@ The plugin works with the following tested federated platforms, but there may be
 * [Pixelfed](https://pixelfed.org/)
 * [Socialhome](https://socialhome.network/)
 * [Misskey](https://join.misskey.page/)
-* [Firefish](https://joinfirefish.org/) (rebrand of Calckey)
 
 Some things to note:
 
@@ -132,6 +131,16 @@ For reasons of data protection, it is not possible to see the followers of other
 
 == Changelog ==
 
+= 5.0.0 =
+
+* Added: Outbox queue
+* Changed: Rewrite the current dispatcher system, to use the Outbox instead of a Scheduler.
+* Changed: Improved content negotiation and AUTHORIZED_FETCH support for third-party plugins.
+* Changed: Moved password check to `is_post_disabled` function.
+* Fixed: Handle deletes from remote servers that leave behind an accessible Tombstone object.
+* Fixed: No longer parses tags for post types that don't support Activitypub.
+* Fixed: rel attribute will now contain no more than one "me" value.
+
 = 4.7.3 =
 
 * Fixed: Flush rewrite rules after NodeInfo update.
@@ -153,11 +162,11 @@ For reasons of data protection, it is not possible to see the followers of other
 * Added: A filter to make custom comment types manageable in WP.com Calypso
 * Changed: Hide ActivityPub post meta keys from the custom Fields UI
 * Changed: Bumped minimum required PHP version to 7.2
+* Changed: Print `_activityPubOptions` in the `wp_footer` action on the frontend.
 * Fixed: Undefined array key warnings in various places
 * Fixed: @-mentions in federated comments being displayed with a line break
 * Fixed: Fetching replies from the same instance for Enable Mastodon Apps
 * Fixed: Image captions not being included in the ActivityPub representation when the image is attached to the post
-* Changed: Print `_activityPubOptions` in the `wp_footer` action on the frontend.
 
 = 4.6.0 =
 
