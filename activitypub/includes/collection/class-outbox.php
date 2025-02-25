@@ -8,8 +8,11 @@
 namespace Activitypub\Collection;
 
 use Activitypub\Dispatcher;
+use Activitypub\Scheduler;
+use Activitypub\Activity\Activity;
 
 use function Activitypub\is_activity;
+use function Activitypub\add_to_outbox;
 
 /**
  * ActivityPub Outbox Collection
@@ -150,5 +153,134 @@ class Outbox {
 			\wp_publish_post( $existing_item_id );
 			\delete_post_meta( $existing_item_id, '_activitypub_outbox_offset' );
 		}
+	}
+
+	/**
+	 * Creates an Undo activity.
+	 *
+	 * @param int|\WP_Post $outbox_item The Outbox post or post ID.
+	 *
+	 * @return int|bool The ID of the outbox item or false on failure.
+	 */
+	public static function undo( $outbox_item ) {
+		$outbox_item = get_post( $outbox_item );
+		$activity    = self::get_activity( $outbox_item );
+
+		$type = 'Undo';
+		if ( 'Create' === $activity->get_type() ) {
+			$type = 'Delete';
+		} elseif ( 'Add' === $activity->get_type() ) {
+			$type = 'Remove';
+		}
+
+		return add_to_outbox( $activity, $type, $outbox_item->post_author );
+	}
+
+	/**
+	 * Reschedule an activity.
+	 *
+	 * @param int|\WP_Post $outbox_item The Outbox post or post ID.
+	 *
+	 * @return bool True if the activity was rescheduled, false otherwise.
+	 */
+	public static function reschedule( $outbox_item ) {
+		$outbox_item = get_post( $outbox_item );
+
+		$outbox_item->post_status = 'pending';
+		$outbox_item->post_date   = current_time( 'mysql' );
+
+		wp_update_post( $outbox_item );
+
+		Scheduler::schedule_outbox_activity_for_federation( $outbox_item->ID );
+
+		return true;
+	}
+
+	/**
+	 * Get the Activity object from the Outbox item.
+	 *
+	 * @param int|\WP_Post $outbox_item The Outbox post or post ID.
+	 * @return Activity|\WP_Error The Activity object or WP_Error.
+	 */
+	public static function get_activity( $outbox_item ) {
+		$outbox_item = get_post( $outbox_item );
+		$actor       = self::get_actor( $outbox_item );
+		if ( is_wp_error( $actor ) ) {
+			return $actor;
+		}
+
+		$type     = \get_post_meta( $outbox_item->ID, '_activitypub_activity_type', true );
+		$activity = new Activity();
+		$activity->set_type( $type );
+		$activity->set_id( $outbox_item->guid );
+		// Pre-fill the Activity with data (for example cc and to).
+		$activity->set_object( \json_decode( $outbox_item->post_content, true ) );
+		$activity->set_actor( $actor->get_id() );
+
+		// Use simple Object (only ID-URI) for Like and Announce.
+		if ( in_array( $type, array( 'Like', 'Delete' ), true ) ) {
+			$activity->set_object( $activity->get_object()->get_id() );
+		}
+
+		return $activity;
+	}
+
+	/**
+	 * Get the Actor object from the Outbox item.
+	 *
+	 * @param \WP_Post $outbox_item The Outbox post.
+	 *
+	 * @return \Activitypub\Model\User|\Activitypub\Model\Blog|\WP_Error The Actor object or WP_Error.
+	 */
+	public static function get_actor( $outbox_item ) {
+		$actor_type = \get_post_meta( $outbox_item->ID, '_activitypub_activity_actor', true );
+
+		switch ( $actor_type ) {
+			case 'blog':
+				$actor_id = Actors::BLOG_USER_ID;
+				break;
+			case 'application':
+				$actor_id = Actors::APPLICATION_USER_ID;
+				break;
+			case 'user':
+			default:
+				$actor_id = $outbox_item->post_author;
+				break;
+		}
+
+		return Actors::get_by_id( $actor_id );
+	}
+
+	/**
+	 * Get the Activity object from the Outbox item.
+	 *
+	 * @param \WP_Post $outbox_item The Outbox post.
+	 *
+	 * @return \Activitypub\Activity\Activity|\WP_Error The Activity object or WP_Error.
+	 */
+	public static function maybe_get_activity( $outbox_item ) {
+		if ( ! $outbox_item || ! $outbox_item instanceof \WP_Post ) {
+			return new \WP_Error( 'invalid_outbox_item', 'Invalid Outbox item.' );
+		}
+
+		if ( 'ap_outbox' !== $outbox_item->post_type ) {
+			return new \WP_Error( 'invalid_outbox_item', 'Invalid Outbox item.' );
+		}
+
+		// Check if Outbox Activity is public.
+		$visibility = \get_post_meta( $outbox_item->ID, 'activitypub_content_visibility', true );
+
+		if ( ! in_array( $visibility, array( ACTIVITYPUB_CONTENT_VISIBILITY_PUBLIC, ACTIVITYPUB_CONTENT_VISIBILITY_QUIET_PUBLIC ), true ) ) {
+			return new \WP_Error( 'private_outbox_item', 'Not a public Outbox item.' );
+		}
+
+		$activity_types = \apply_filters( 'rest_activitypub_outbox_activity_types', array( 'Announce', 'Create', 'Like', 'Update' ) );
+		$activity_type  = \get_post_meta( $outbox_item->ID, '_activitypub_activity_type', true );
+
+		if ( ! in_array( $activity_type, $activity_types, true ) ) {
+			return new \WP_Error( 'private_outbox_item', 'Not public Outbox item type.' );
+		}
+
+		return self::get_activity( $outbox_item );
 	}
 }

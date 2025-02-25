@@ -22,21 +22,36 @@ use Activitypub\Transformer\Factory;
 class Scheduler {
 
 	/**
+	 * Allowed batch callbacks.
+	 *
+	 * @var array
+	 */
+	private static $batch_callbacks = array();
+
+	/**
 	 * Initialize the class, registering WordPress hooks.
 	 */
 	public static function init() {
 		self::register_schedulers();
 
+		self::$batch_callbacks = array(
+			Dispatcher::$callback,
+			array( Dispatcher::class, 'retry_send_to_followers' ),
+		);
+
 		// Follower Cleanups.
 		\add_action( 'activitypub_update_followers', array( self::class, 'update_followers' ) );
 		\add_action( 'activitypub_cleanup_followers', array( self::class, 'cleanup_followers' ) );
 
+		// Event callbacks.
 		\add_action( 'activitypub_async_batch', array( self::class, 'async_batch' ), 10, 99 );
 		\add_action( 'activitypub_reprocess_outbox', array( self::class, 'reprocess_outbox' ) );
 		\add_action( 'activitypub_outbox_purge', array( self::class, 'purge_outbox' ) );
 
 		\add_action( 'post_activitypub_add_to_outbox', array( self::class, 'schedule_outbox_activity_for_federation' ) );
 		\add_action( 'post_activitypub_add_to_outbox', array( self::class, 'schedule_announce_activity' ), 10, 4 );
+
+		\add_action( 'update_option_activitypub_outbox_purge_days', array( self::class, 'handle_outbox_purge_days_update' ), 10, 2 );
 	}
 
 	/**
@@ -161,15 +176,16 @@ class Scheduler {
 	/**
 	 * Schedule the outbox item for federation.
 	 *
-	 * @param int $id The ID of the outbox item.
+	 * @param int $id     The ID of the outbox item.
+	 * @param int $offset The offset to add to the scheduled time.
 	 */
-	public static function schedule_outbox_activity_for_federation( $id ) {
+	public static function schedule_outbox_activity_for_federation( $id, $offset = 0 ) {
 		$hook = 'activitypub_process_outbox';
 		$args = array( $id );
 
 		if ( false === wp_next_scheduled( $hook, $args ) ) {
 			\wp_schedule_single_event(
-				\time() + 10,
+				\time() + $offset,
 				$hook,
 				$args
 			);
@@ -214,7 +230,7 @@ class Scheduler {
 			return;
 		}
 
-		$days     = 180; // TODO: Replace with a setting.
+		$days     = (int) get_option( 'activitypub_outbox_purge_days', 180 );
 		$timezone = new \DateTimeZone( 'UTC' );
 		$date     = new \DateTime( 'now', $timezone );
 
@@ -225,6 +241,7 @@ class Scheduler {
 				'post_type'   => Outbox::POST_TYPE,
 				'post_status' => 'any',
 				'fields'      => 'ids',
+				'numberposts' => -1,
 				'date_query'  => array(
 					array(
 						'before' => $date->format( 'Y-m-d' ),
@@ -239,6 +256,20 @@ class Scheduler {
 	}
 
 	/**
+	 * Update schedules when outbox purge days settings change.
+	 *
+	 * @param int $old_value The old value.
+	 * @param int $value     The new value.
+	 */
+	public static function handle_outbox_purge_days_update( $old_value, $value ) {
+		if ( 0 === (int) $value ) {
+			wp_clear_scheduled_hook( 'activitypub_outbox_purge' );
+		} elseif ( ! wp_next_scheduled( 'activitypub_outbox_purge' ) ) {
+			wp_schedule_event( time(), 'daily', 'activitypub_outbox_purge' );
+		}
+	}
+
+	/**
 	 * Asynchronously runs batch processing routines.
 	 *
 	 * The batching part is optional and only comes into play if the callback returns anything.
@@ -248,7 +279,7 @@ class Scheduler {
 	 * @params mixed   ...$args  Optional. Parameters that get passed to the callback.
 	 */
 	public static function async_batch( $callback ) {
-		if ( ! \is_callable( $callback ) ) {
+		if ( ! in_array( $callback, self::$batch_callbacks, true ) || ! \is_callable( $callback ) ) {
 			_doing_it_wrong( __METHOD__, 'The first argument must be a valid callback.', '5.2.0' );
 			return;
 		}
@@ -407,6 +438,6 @@ class Scheduler {
 		}
 
 		// Schedule the outbox item for federation.
-		self::schedule_outbox_activity_for_federation( $outbox_activity_id );
+		self::schedule_outbox_activity_for_federation( $outbox_activity_id, 30 );
 	}
 }

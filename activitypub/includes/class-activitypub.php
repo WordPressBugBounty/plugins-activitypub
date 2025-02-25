@@ -111,6 +111,7 @@ class Activitypub {
 		delete_option( 'activitypub_max_image_attachments' );
 		delete_option( 'activitypub_migration_lock' );
 		delete_option( 'activitypub_object_type' );
+		delete_option( 'activitypub_outbox_purge_days' );
 		delete_option( 'activitypub_support_post_types' );
 		delete_option( 'activitypub_use_hashtags' );
 		delete_option( 'activitypub_use_opengraph' );
@@ -176,11 +177,6 @@ class Activitypub {
 			if ( ! \headers_sent() ) {
 				// Send 200 status header.
 				\status_header( 200 );
-
-				if ( ACTIVITYPUB_SEND_VARY_HEADER ) {
-					// Send Vary header for Accept header.
-					\header( 'Vary: Accept' );
-				}
 			}
 
 			return $activitypub_template;
@@ -200,7 +196,12 @@ class Activitypub {
 		}
 
 		if ( ! headers_sent() ) {
-			header( 'Link: <' . esc_url( $id ) . '>; title="ActivityPub (JSON)"; rel="alternate"; type="application/activity+json"', false );
+			\header( 'Link: <' . esc_url( $id ) . '>; title="ActivityPub (JSON)"; rel="alternate"; type="application/activity+json"', false );
+
+			if ( ACTIVITYPUB_SEND_VARY_HEADER ) {
+				// Send Vary header for Accept header.
+				\header( 'Vary: Accept', false );
+			}
 		}
 
 		add_action(
@@ -412,7 +413,7 @@ class Activitypub {
 		}
 
 		\add_rewrite_rule(
-			'^@([\w\-\.]+)',
+			'^@([\w\-\.]+)$',
 			'index.php?rest_route=/' . ACTIVITYPUB_REST_NAMESPACE . '/actors/$matches[1]',
 			'top'
 		);

@@ -52,6 +52,7 @@ use function Activitypub\is_activity;
  * @method Activity set_attachment( array $attachment ) Sets the attachment property of the object.
  * @method Activity set_icon( array $icon )             Sets the icon property of the object.
  * @method Activity set_image( array $image )           Sets the image property of the object.
+ * @method Activity set_content( string $content )      Sets the content property of the object.
  */
 class Activity extends Base_Object {
 	const JSON_LD_CONTEXT = array(
@@ -164,14 +165,7 @@ class Activity extends Base_Object {
 	public function set_object( $data ) {
 		// Convert array to object.
 		if ( is_array( $data ) ) {
-			// Check if the item is an Activity or an Object.
-			if ( is_activity( $data ) ) {
-				$data = self::init_from_array( $data );
-			} elseif ( is_actor( $data ) ) {
-				$data = Actor::init_from_array( $data );
-			} else {
-				$data = Base_Object::init_from_array( $data );
-			}
+			$data = Generic_Object::init_from_array( $data );
 		}
 
 		// Set object.

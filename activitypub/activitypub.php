@@ -3,7 +3,7 @@
  * Plugin Name: ActivityPub
  * Plugin URI: https://github.com/Automattic/wordpress-activitypub
  * Description: The ActivityPub protocol is a decentralized social networking protocol based upon the ActivityStreams 2.0 data format.
- * Version: 5.2.0
+ * Version: 5.3.0
  * Author: Matthias Pfefferle & Automattic
  * Author URI: https://automattic.com/
  * License: MIT
@@ -19,7 +19,7 @@ namespace Activitypub;
 
 use WP_CLI;
 
-\define( 'ACTIVITYPUB_PLUGIN_VERSION', '5.2.0' );
+\define( 'ACTIVITYPUB_PLUGIN_VERSION', '5.3.0' );
 
 // Plugin related constants.
 \define( 'ACTIVITYPUB_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
@@ -40,12 +40,12 @@ Autoloader::register_path( __NAMESPACE__, __DIR__ . '/includes' );
  */
 function rest_init() {
 	Rest\Inbox::init();
-	Rest\Comment::init();
 	Rest\Server::init();
 	Rest\Post::init();
 	( new Rest\Actors_Controller() )->register_routes();
 	( new Rest\Application_Controller() )->register_routes();
 	( new Rest\Collections_Controller() )->register_routes();
+	( new Rest\Comments_Controller() )->register_routes();
 	( new Rest\Followers_Controller() )->register_routes();
 	( new Rest\Following_Controller() )->register_routes();
 	( new Rest\Interaction_Controller() )->register_routes();
@@ -69,14 +69,20 @@ function plugin_init() {
 	\add_action( 'init', array( __NAMESPACE__ . '\Activitypub', 'init' ) );
 	\add_action( 'init', array( __NAMESPACE__ . '\Dispatcher', 'init' ) );
 	\add_action( 'init', array( __NAMESPACE__ . '\Handler', 'init' ) );
-	\add_action( 'init', array( __NAMESPACE__ . '\Admin', 'init' ) );
 	\add_action( 'init', array( __NAMESPACE__ . '\Hashtag', 'init' ) );
 	\add_action( 'init', array( __NAMESPACE__ . '\Mention', 'init' ) );
-	\add_action( 'init', array( __NAMESPACE__ . '\Health_Check', 'init' ) );
 	\add_action( 'init', array( __NAMESPACE__ . '\Scheduler', 'init' ) );
 	\add_action( 'init', array( __NAMESPACE__ . '\Comment', 'init' ) );
 	\add_action( 'init', array( __NAMESPACE__ . '\Link', 'init' ) );
 	\add_action( 'init', array( __NAMESPACE__ . '\Mailer', 'init' ) );
+
+	// Menus are registered before `admin_init`, because of course they are.
+	\add_action( 'admin_menu', array( __NAMESPACE__ . '\WP_Admin\Menu', 'admin_menu' ) );
+	\add_action( 'admin_init', array( __NAMESPACE__ . '\WP_Admin\Admin', 'init' ) );
+	\add_action( 'admin_init', array( __NAMESPACE__ . '\WP_Admin\Health_Check', 'init' ) );
+	\add_action( 'admin_init', array( __NAMESPACE__ . '\WP_Admin\Settings', 'init' ) );
+	\add_action( 'admin_init', array( __NAMESPACE__ . '\WP_Admin\Settings_Fields', 'init' ) );
+	\add_action( 'admin_init', array( __NAMESPACE__ . '\WP_Admin\Blog_Settings_Fields', 'init' ) );
 
 	if ( site_supports_blocks() ) {
 		\add_action( 'init', array( __NAMESPACE__ . '\Blocks', 'init' ) );

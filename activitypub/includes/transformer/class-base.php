@@ -90,7 +90,7 @@ abstract class Base {
 			if ( \method_exists( $this, $getter ) ) {
 				$value = \call_user_func( array( $this, $getter ) );
 
-				if ( isset( $value ) ) {
+				if ( ! empty( $value ) ) {
 					$setter = 'set_' . $var;
 
 					/**
@@ -171,7 +171,7 @@ abstract class Base {
 		$public = 'https://www.w3.org/ns/activitystreams#Public';
 		$actor  = Actors::get_by_resource( $this->get_attributed_to() );
 		if ( ! $actor || is_wp_error( $actor ) ) {
-			$followers = array();
+			$followers = null;
 		} else {
 			$followers = $actor->get_followers();
 		}
@@ -235,6 +235,28 @@ abstract class Base {
 	 */
 	protected function get_locale() {
 		$lang = \strtolower( \strtok( \get_locale(), '_-' ) );
+
+		if ( $this->item instanceof \WP_Post ) {
+			/**
+			 * Deprecates the `activitypub_post_locale` filter.
+			 *
+			 * @param string $lang The locale of the post.
+			 * @param mixed  $item The post object.
+			 *
+			 * @return string The filtered locale of the post.
+			 */
+			$lang = apply_filters_deprecated(
+				'activitypub_post_locale',
+				array(
+					$lang,
+					$this->item->ID,
+					$this->item,
+				),
+				'5.4.0',
+				'activitypub_locale',
+				'Use the `activitypub_locale` filter instead.'
+			);
+		}
 
 		/**
 		 * Filter the locale of the post.

@@ -8,8 +8,8 @@
 namespace Activitypub;
 
 use Activitypub\Activity\Activity;
-use Activitypub\Collection\Actors;
 use Activitypub\Collection\Followers;
+use Activitypub\Collection\Outbox;
 
 /**
  * ActivityPub Dispatcher Class.
@@ -33,6 +33,14 @@ class Dispatcher {
 	 * @var array
 	 */
 	public static $callback = array( self::class, 'send_to_followers' );
+
+	/**
+	 * Error codes that qualify for a retry.
+	 *
+	 * @see https://github.com/tfredrich/RestApiTutorial.com/blob/fd08b0f67f07450521d143b123cd6e1846cb2e3b/content/advanced/responses/retries.md
+	 * @var int[]
+	 */
+	public static $retry_error_codes = array( 408, 429, 500, 502, 503, 504 );
 
 	/**
 	 * Initialize the class, registering WordPress hooks.
@@ -77,28 +85,24 @@ class Dispatcher {
 			return;
 		}
 
-		$actor = self::get_actor( $outbox_item );
+		$actor = Outbox::get_actor( $outbox_item );
 		if ( \is_wp_error( $actor ) ) {
 			// If the actor is not found, publish the post and don't try again.
 			\wp_publish_post( $outbox_item );
 			return;
 		}
 
-		$activity = self::get_activity( $outbox_item );
+		$activity = Outbox::get_activity( $outbox_item );
 
 		// Send to mentioned and replied-to users. Everyone other than followers.
 		self::send_to_interactees( $activity, $actor->get__id(), $outbox_item );
 
 		if ( self::should_send_to_followers( $activity, $actor, $outbox_item ) ) {
-			\wp_schedule_single_event(
-				\time(),
-				'activitypub_async_batch',
-				array(
-					self::$callback,
-					$outbox_item->ID,
-					self::$batch_size,
-					\get_post_meta( $outbox_item->ID, '_activitypub_outbox_offset', true ) ?: 0, // phpcs:ignore
-				)
+			Scheduler::async_batch(
+				self::$callback,
+				$outbox_item->ID,
+				self::$batch_size,
+				\get_post_meta( $outbox_item->ID, '_activitypub_outbox_offset', true ) ?: 0 // phpcs:ignore
 			);
 		} else {
 			// No followers to process for this update. We're done.
@@ -117,24 +121,15 @@ class Dispatcher {
 	 * @return array|void The next batch of followers to process, or void if done.
 	 */
 	public static function send_to_followers( $outbox_item_id, $batch_size = 50, $offset = 0 ) {
-		$activity = self::get_activity( $outbox_item_id );
-		$actor    = self::get_actor( \get_post( $outbox_item_id ) );
-		$json     = $activity->to_json();
-		$inboxes  = Followers::get_inboxes_for_activity( $json, $actor->get__id(), $batch_size, $offset );
+		$json    = Outbox::get_activity( $outbox_item_id )->to_json();
+		$actor   = Outbox::get_actor( \get_post( $outbox_item_id ) );
+		$inboxes = Followers::get_inboxes_for_activity( $json, $actor->get__id(), $batch_size, $offset );
 
-		foreach ( $inboxes as $inbox ) {
-			$result = safe_remote_post( $inbox, $json, $actor->get__id() );
+		$retries = self::send_to_inboxes( $inboxes, $outbox_item_id );
 
-			/**
-			 * Fires after an Activity has been sent to an inbox.
-			 *
-			 * @param array  $result         The result of the remote post request.
-			 * @param string $inbox          The inbox URL.
-			 * @param string $json           The ActivityPub Activity JSON.
-			 * @param int    $actor_id       The actor ID.
-			 * @param int    $outbox_item_id The Outbox item ID.
-			 */
-			\do_action( 'activitypub_sent_to_inbox', $result, $inbox, $json, $actor->get__id(), $outbox_item_id );
+		// Retry failed inboxes.
+		if ( ! empty( $retries ) ) {
+			self::schedule_retry( $retries, $outbox_item_id );
 		}
 
 		if ( is_countable( $inboxes ) && count( $inboxes ) < self::$batch_size ) {
@@ -174,10 +169,91 @@ class Dispatcher {
 	}
 
 	/**
+	 * Retry sending to followers.
+	 *
+	 * @param string $transient_key  The key to retrieve retry inboxes.
+	 * @param int    $outbox_item_id The Outbox item ID.
+	 * @param int    $attempt        The attempt number.
+	 */
+	public static function retry_send_to_followers( $transient_key, $outbox_item_id, $attempt = 1 ) {
+		$inboxes = \get_transient( $transient_key );
+		if ( false === $inboxes ) {
+			return;
+		}
+
+		// Delete the transient as we no longer need it.
+		\delete_transient( $transient_key );
+
+		$retries = self::send_to_inboxes( $inboxes, $outbox_item_id );
+
+		// Retry failed inboxes.
+		if ( ++$attempt < 3 && ! empty( $retries ) ) {
+			self::schedule_retry( $retries, $outbox_item_id, $attempt );
+		}
+	}
+
+	/**
+	 * Send to inboxes.
+	 *
+	 * @param array $inboxes        The inboxes to notify.
+	 * @param int   $outbox_item_id The Outbox item ID.
+	 * @return array The failed inboxes.
+	 */
+	private static function send_to_inboxes( $inboxes, $outbox_item_id ) {
+		$json    = Outbox::get_activity( $outbox_item_id )->to_json();
+		$actor   = Outbox::get_actor( \get_post( $outbox_item_id ) );
+		$retries = array();
+
+		foreach ( $inboxes as $inbox ) {
+			$result = safe_remote_post( $inbox, $json, $actor->get__id() );
+
+			if ( is_wp_error( $result ) && in_array( $result->get_error_code(), self::$retry_error_codes, true ) ) {
+				$retries[] = $inbox;
+			}
+
+			/**
+			 * Fires after an Activity has been sent to an inbox.
+			 *
+			 * @param array  $result         The result of the remote post request.
+			 * @param string $inbox          The inbox URL.
+			 * @param string $json           The ActivityPub Activity JSON.
+			 * @param int    $actor_id       The actor ID.
+			 * @param int    $outbox_item_id The Outbox item ID.
+			 */
+			\do_action( 'activitypub_sent_to_inbox', $result, $inbox, $json, $actor->get__id(), $outbox_item_id );
+		}
+
+		return $retries;
+	}
+
+	/**
+	 * Schedule a retry.
+	 *
+	 * @param array $retries        The inboxes to retry.
+	 * @param int   $outbox_item_id The Outbox item ID.
+	 * @param int   $attempt        Optional. The attempt number. Default 1.
+	 */
+	private static function schedule_retry( $retries, $outbox_item_id, $attempt = 1 ) {
+		$transient_key = 'activitypub_retry_' . \wp_generate_password( 12, false );
+		\set_transient( $transient_key, $retries, WEEK_IN_SECONDS );
+
+		\wp_schedule_single_event(
+			\time() + ( $attempt * $attempt * HOUR_IN_SECONDS ),
+			'activitypub_async_batch',
+			array(
+				array( self::class, 'retry_send_to_followers' ),
+				$transient_key,
+				$outbox_item_id,
+				$attempt,
+			)
+		);
+	}
+
+	/**
 	 * Send an Activity to all followers and mentioned users.
 	 *
-	 * @param Activity $activity  The ActivityPub Activity.
-	 * @param int      $actor_id  The actor ID.
+	 * @param Activity $activity    The ActivityPub Activity.
+	 * @param int      $actor_id    The actor ID.
 	 * @param \WP_Post $outbox_item The WordPress object.
 	 */
 	private static function send_to_interactees( $activity, $actor_id, $outbox_item = null ) {
@@ -191,21 +267,11 @@ class Dispatcher {
 		$inboxes = apply_filters( 'activitypub_interactees_inboxes', array(), $actor_id, $activity );
 		$inboxes = array_unique( $inboxes );
 
-		$json = $activity->to_json();
+		$retries = self::send_to_inboxes( $inboxes, $outbox_item->ID );
 
-		foreach ( $inboxes as $inbox ) {
-			$result = safe_remote_post( $inbox, $json, $actor_id );
-
-			/**
-			 * Fires after an Activity has been sent to an inbox.
-			 *
-			 * @param array  $result         The result of the remote post request.
-			 * @param string $inbox          The inbox URL.
-			 * @param string $json           The ActivityPub Activity JSON.
-			 * @param int    $actor_id       The actor ID.
-			 * @param int    $outbox_item_id The Outbox item ID.
-			 */
-			\do_action( 'activitypub_sent_to_inbox', $result, $inbox, $json, $actor_id, $outbox_item->ID );
+		// Retry failed inboxes.
+		if ( ! empty( $retries ) ) {
+			self::schedule_retry( $retries, $outbox_item->ID );
 		}
 	}
 
@@ -338,60 +404,5 @@ class Dispatcher {
 		 * @param \WP_Post $outbox_item                The WordPress object.
 		 */
 		return apply_filters( 'activitypub_send_activity_to_followers', $send, $activity, $actor->get__id(), $outbox_item );
-	}
-
-	/**
-	 * Get the Activity object from the Outbox item.
-	 *
-	 * @param int|\WP_Post $outbox_item The Outbox post or post ID.
-	 * @return Activity|\WP_Error The Activity object or WP_Error.
-	 */
-	private static function get_activity( $outbox_item ) {
-		$outbox_item = get_post( $outbox_item );
-		$actor       = self::get_actor( $outbox_item );
-		if ( is_wp_error( $actor ) ) {
-			return $actor;
-		}
-
-		$type     = \get_post_meta( $outbox_item->ID, '_activitypub_activity_type', true );
-		$activity = new Activity();
-		$activity->set_type( $type );
-		$activity->set_id( $outbox_item->guid );
-		// Pre-fill the Activity with data (for example cc and to).
-		$activity->set_object( \json_decode( $outbox_item->post_content, true ) );
-		$activity->set_actor( $actor->get_id() );
-
-		// Use simple Object (only ID-URI) for Like and Announce.
-		if ( in_array( $type, array( 'Like', 'Delete' ), true ) ) {
-			$activity->set_object( $activity->get_object()->get_id() );
-		}
-
-		return $activity;
-	}
-
-	/**
-	 * Get the Actor object from the Outbox item.
-	 *
-	 * @param \WP_Post $outbox_item The Outbox post.
-	 *
-	 * @return \Activitypub\Model\User|\Activitypub\Model\Blog|\WP_Error The Actor object or WP_Error.
-	 */
-	private static function get_actor( $outbox_item ) {
-		$actor_type = \get_post_meta( $outbox_item->ID, '_activitypub_activity_actor', true );
-
-		switch ( $actor_type ) {
-			case 'blog':
-				$actor_id = Actors::BLOG_USER_ID;
-				break;
-			case 'application':
-				$actor_id = Actors::APPLICATION_USER_ID;
-				break;
-			case 'user':
-			default:
-				$actor_id = $outbox_item->post_author;
-				break;
-		}
-
-		return Actors::get_by_id( $actor_id );
 	}
 }
