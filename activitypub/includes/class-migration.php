@@ -182,8 +182,10 @@ class Migration {
 		if ( \version_compare( $version_from_db, '5.2.0', '<' ) ) {
 			Scheduler::register_schedules();
 		}
-		if ( \version_compare( $version_from_db, '5.3.0', '<' ) ) {
-			add_action( 'init', 'flush_rewrite_rules', 20 );
+		if ( \version_compare( $version_from_db, '5.4.0', '<' ) ) {
+			\wp_schedule_single_event( \time(), 'activitypub_upgrade', array( 'update_actor_json_slashing' ) );
+			\wp_schedule_single_event( \time(), 'activitypub_upgrade', array( 'update_comment_author_emails' ) );
+			\add_action( 'init', 'flush_rewrite_rules', 20 );
 		}
 
 		/*
@@ -620,6 +622,101 @@ class Migration {
 
 		foreach ( $comments as $comment ) {
 			self::add_to_outbox( $comment, 'Create', $comment->user_id );
+		}
+
+		if ( count( $comments ) === $batch_size ) {
+			return array(
+				'batch_size' => $batch_size,
+				'offset'     => $offset + $batch_size,
+			);
+		}
+
+		return null;
+	}
+
+	/**
+	 * Update _activitypub_actor_json meta values to ensure they are properly slashed.
+	 *
+	 * @param int $batch_size Optional. Number of meta values to process per batch. Default 100.
+	 * @param int $offset     Optional. Number of meta values to skip. Default 0.
+	 * @return array|null Array with batch size and offset if there are more meta values to process, null otherwise.
+	 */
+	public static function update_actor_json_slashing( $batch_size = 100, $offset = 0 ) {
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$meta_values = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT post_id, meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_activitypub_actor_json' LIMIT %d OFFSET %d",
+				$batch_size,
+				$offset
+			)
+		);
+
+		foreach ( $meta_values as $meta ) {
+			$json = \json_decode( $meta->meta_value, true );
+
+			// If json_decode fails, try adding slashes.
+			if ( null === $json && \json_last_error() !== JSON_ERROR_NONE ) {
+				$escaped_value = \preg_replace( '#\\\\(?!["\\\\/bfnrtu])#', '\\\\\\\\', $meta->meta_value );
+				$json          = \json_decode( $escaped_value, true );
+
+				// Update the meta if json_decode succeeds with slashes.
+				if ( null !== $json && \json_last_error() === JSON_ERROR_NONE ) {
+					\update_post_meta( $meta->post_id, '_activitypub_actor_json', \wp_slash( $escaped_value ) );
+				}
+			}
+		}
+
+		if ( \count( $meta_values ) === $batch_size ) {
+			return array(
+				'batch_size' => $batch_size,
+				'offset'     => $offset + $batch_size,
+			);
+		}
+
+		return null;
+	}
+
+	/**
+	 * Update comment author emails with webfinger addresses for ActivityPub comments.
+	 *
+	 * @param int $batch_size Optional. Number of comments to process per batch. Default 50.
+	 * @param int $offset     Optional. Number of comments to skip. Default 0.
+	 * @return array|null Array with batch size and offset if there are more comments to process, null otherwise.
+	 */
+	public static function update_comment_author_emails( $batch_size = 50, $offset = 0 ) {
+		$comments = \get_comments(
+			array(
+				'number'     => $batch_size,
+				'offset'     => $offset,
+				// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query
+				'meta_query' => array(
+					array(
+						'key'   => 'protocol',
+						'value' => 'activitypub',
+					),
+				),
+			)
+		);
+
+		foreach ( $comments as $comment ) {
+			$comment_author_url = $comment->comment_author_url;
+			if ( empty( $comment_author_url ) ) {
+				continue;
+			}
+
+			$webfinger = Webfinger::uri_to_acct( $comment_author_url );
+			if ( \is_wp_error( $webfinger ) ) {
+				continue;
+			}
+
+			\wp_update_comment(
+				array(
+					'comment_ID'           => $comment->comment_ID,
+					'comment_author_email' => \str_replace( 'acct:', '', $webfinger ),
+				)
+			);
 		}
 
 		if ( count( $comments ) === $batch_size ) {

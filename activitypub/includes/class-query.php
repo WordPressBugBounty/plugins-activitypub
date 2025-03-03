@@ -190,8 +190,8 @@ class Query {
 	 * Virtual objects are objects that are not stored in the database, but are created on the fly.
 	 * The plugins currently supports two virtual objects: The Blog-Actor and the Application-Actor.
 	 *
-	 * @see \Activitypub\Blog
-	 * @see \Activitypub\Application
+	 * @see \Activitypub\Model\Blog
+	 * @see \Activitypub\Model\Application
 	 *
 	 * @return object|null The virtual object.
 	 */
@@ -205,10 +205,10 @@ class Query {
 		$author_id = url_to_authorid( $url );
 
 		if ( ! is_numeric( $author_id ) ) {
-			return null;
+			$author_id = $url;
 		}
 
-		$user = Actors::get_by_id( $author_id );
+		$user = Actors::get_by_various( $author_id );
 
 		if ( \is_wp_error( $user ) || ! $user ) {
 			return null;

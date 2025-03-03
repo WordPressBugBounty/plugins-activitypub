@@ -8,7 +8,7 @@
 namespace Activitypub;
 
 use Exception;
-use Activitypub\Transformer\Factory;
+use Activitypub\Collection\Actors;
 use Activitypub\Collection\Outbox;
 use Activitypub\Collection\Followers;
 use Activitypub\Collection\Extra_Fields;
@@ -43,12 +43,6 @@ class Activitypub {
 		\add_action( 'init', array( self::class, 'theme_compat' ), 11 );
 
 		\add_action( 'user_register', array( self::class, 'user_register' ) );
-
-		\add_action( 'in_plugin_update_message-' . ACTIVITYPUB_PLUGIN_BASENAME, array( self::class, 'plugin_update_message' ) );
-
-		if ( site_supports_blocks() ) {
-			\add_action( 'tool_box', array( self::class, 'tool_box' ) );
-		}
 
 		\add_filter( 'activitypub_get_actor_extra_fields', array( Extra_Fields::class, 'default_actor_extra_fields' ), 10, 2 );
 
@@ -255,29 +249,50 @@ class Activitypub {
 	 * @return void
 	 */
 	public static function template_redirect() {
+		global $wp_query;
+
 		$comment_id = get_query_var( 'c', null );
 
 		// Check if it seems to be a comment.
-		if ( ! $comment_id ) {
-			return;
+		if ( $comment_id ) {
+			$comment = get_comment( $comment_id );
+
+			// Load a 404-page if `c` is set but not valid.
+			if ( ! $comment ) {
+				$wp_query->set_404();
+				return;
+			}
+
+			// Stop if it's not an ActivityPub comment.
+			if ( is_activitypub_request() && ! is_local_comment( $comment ) ) {
+				return;
+			}
+
+			wp_safe_redirect( get_comment_link( $comment ) );
+			exit;
 		}
 
-		$comment = get_comment( $comment_id );
+		$actor = get_query_var( 'actor', null );
+		if ( $actor ) {
+			$actor = Actors::get_by_username( $actor );
+			if ( ! $actor || \is_wp_error( $actor ) ) {
+				$wp_query->set_404();
+				return;
+			}
 
-		// Load a 404 page if `c` is set but not valid.
-		if ( ! $comment ) {
-			global $wp_query;
-			$wp_query->set_404();
-			return;
+			if ( is_activitypub_request() ) {
+				return;
+			}
+
+			if ( $actor->get__id() > 0 ) {
+				$redirect_url = $actor->get_url();
+			} else {
+				$redirect_url = get_bloginfo( 'url' );
+			}
+
+			wp_safe_redirect( $redirect_url, 301 );
+			exit;
 		}
-
-		// Stop if it's not an ActivityPub comment.
-		if ( is_activitypub_request() && ! is_local_comment( $comment ) ) {
-			return;
-		}
-
-		wp_safe_redirect( get_comment_link( $comment ) );
-		exit;
 	}
 
 	/**
@@ -291,6 +306,7 @@ class Activitypub {
 		$vars[] = 'activitypub';
 		$vars[] = 'preview';
 		$vars[] = 'author';
+		$vars[] = 'actor';
 		$vars[] = 'c';
 		$vars[] = 'p';
 
@@ -412,12 +428,7 @@ class Activitypub {
 			);
 		}
 
-		\add_rewrite_rule(
-			'^@([\w\-\.]+)$',
-			'index.php?rest_route=/' . ACTIVITYPUB_REST_NAMESPACE . '/actors/$matches[1]',
-			'top'
-		);
-
+		\add_rewrite_rule( '^@([\w\-\.]+)\/?$', 'index.php?actor=$matches[1]', 'top' );
 		\add_rewrite_endpoint( 'activitypub', EP_AUTHORS | EP_PERMALINK | EP_PAGES );
 	}
 
@@ -427,15 +438,6 @@ class Activitypub {
 	public static function flush_rewrite_rules() {
 		self::add_rewrite_rules();
 		\flush_rewrite_rules();
-	}
-
-	/**
-	 * Adds metabox on wp-admin/tools.php.
-	 */
-	public static function tool_box() {
-		if ( \current_user_can( 'edit_posts' ) ) {
-			\load_template( ACTIVITYPUB_PLUGIN_DIR . 'templates/toolbox.php' );
-		}
 	}
 
 	/**
@@ -458,30 +460,6 @@ class Activitypub {
 				);
 			}
 		}
-	}
-
-	/**
-	 * Display plugin upgrade notice to users.
-	 *
-	 * @param array $data The plugin data.
-	 */
-	public static function plugin_update_message( $data ) {
-		if ( ! isset( $data['upgrade_notice'] ) ) {
-			return;
-		}
-
-		printf(
-			'<div class="update-message">%s</div>',
-			wp_kses(
-				wpautop( $data['upgrade_notice '] ),
-				array(
-					'p'      => array(),
-					'a'      => array( 'href', 'title' ),
-					'strong' => array(),
-					'em'     => array(),
-				)
-			)
-		);
 	}
 
 	/**
