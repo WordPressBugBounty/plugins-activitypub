@@ -552,4 +552,30 @@ class Blog extends Actor {
 	public function get_attribution_domains() {
 		return get_attribution_domains();
 	}
+
+	/**
+	 * Returns the alsoKnownAs.
+	 *
+	 * @return array The alsoKnownAs.
+	 */
+	public function get_also_known_as() {
+		$also_known_as = array(
+			\add_query_arg( 'author', $this->_id, \home_url( '/' ) ),
+			$this->get_url(),
+			$this->get_alternate_url(),
+		);
+
+		$also_known_as = array_merge( $also_known_as, \get_option( 'activitypub_blog_user_also_known_as', array() ) );
+
+		return array_unique( $also_known_as );
+	}
+
+	/**
+	 * Returns the movedTo.
+	 *
+	 * @return string The movedTo.
+	 */
+	public function get_moved_to() {
+		return \get_option( 'activitypub_blog_user_moved_to' );
+	}
 }

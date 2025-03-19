@@ -26,6 +26,7 @@ class Activitypub {
 		\add_filter( 'template_include', array( self::class, 'render_activitypub_template' ), 99 );
 		\add_action( 'template_redirect', array( self::class, 'template_redirect' ) );
 		\add_filter( 'redirect_canonical', array( self::class, 'redirect_canonical' ), 10, 2 );
+		\add_filter( 'redirect_canonical', array( self::class, 'no_trailing_redirect' ), 10, 2 );
 		\add_filter( 'query_vars', array( self::class, 'add_query_vars' ) );
 		\add_filter( 'pre_get_avatar_data', array( self::class, 'pre_get_avatar_data' ), 11, 2 );
 
@@ -48,6 +49,9 @@ class Activitypub {
 
 		\add_action( 'updated_postmeta', array( self::class, 'updated_postmeta' ), 10, 4 );
 		\add_action( 'added_post_meta', array( self::class, 'updated_postmeta' ), 10, 4 );
+		\add_filter( 'pre_option_activitypub_actor_mode', array( self::class, 'pre_get_option' ) );
+
+		\add_action( 'init', array( self::class, 'register_user_meta' ), 11 );
 
 		// Register several post_types.
 		self::register_post_types();
@@ -89,6 +93,8 @@ class Activitypub {
 		delete_option( 'activitypub_authorized_fetch' );
 		delete_option( 'activitypub_application_user_private_key' );
 		delete_option( 'activitypub_application_user_public_key' );
+		delete_option( 'activitypub_blog_user_also_known_as' );
+		delete_option( 'activitypub_blog_user_moved_to' );
 		delete_option( 'activitypub_blog_user_private_key' );
 		delete_option( 'activitypub_blog_user_public_key' );
 		delete_option( 'activitypub_blog_description' );
@@ -120,7 +126,7 @@ class Activitypub {
 	 * @return string The new path to the JSON template.
 	 */
 	public static function render_activitypub_template( $template ) {
-		if ( defined( 'REST_REQUEST' ) && REST_REQUEST ) {
+		if ( \wp_is_serving_rest_request() || \wp_doing_ajax() ) {
 			return $template;
 		}
 
@@ -204,6 +210,22 @@ class Activitypub {
 				echo PHP_EOL . '<link rel="alternate" title="ActivityPub (JSON)" type="application/activity+json" href="' . esc_url( $id ) . '" />' . PHP_EOL;
 			}
 		);
+	}
+
+	/**
+	 * Remove trailing slash from ActivityPub @username requests.
+	 *
+	 * @param string $redirect_url  The URL to redirect to.
+	 * @param string $requested_url The requested URL.
+	 *
+	 * @return string $redirect_url The possibly-unslashed redirect URL.
+	 */
+	public static function no_trailing_redirect( $redirect_url, $requested_url ) {
+		if ( get_query_var( 'actor' ) ) {
+			return $requested_url;
+		}
+
+		return $redirect_url;
 	}
 
 	/**
@@ -361,6 +383,29 @@ class Activitypub {
 		}
 
 		return $args;
+	}
+
+	/**
+	 * Pre-get option filter for the Actor-Mode.
+	 *
+	 * @param string|false $pre The pre-get option value.
+	 *
+	 * @return string|false The actor mode or false if it should not be filtered.
+	 */
+	public static function pre_get_option( $pre ) {
+		if ( \defined( 'ACTIVITYPUB_SINGLE_USER_MODE' ) && ACTIVITYPUB_SINGLE_USER_MODE ) {
+			return ACTIVITYPUB_BLOG_MODE;
+		}
+
+		if ( \defined( 'ACTIVITYPUB_DISABLE_USER' ) && ACTIVITYPUB_DISABLE_USER ) {
+			return ACTIVITYPUB_BLOG_MODE;
+		}
+
+		if ( \defined( 'ACTIVITYPUB_DISABLE_BLOG_USER' ) && ACTIVITYPUB_DISABLE_BLOG_USER ) {
+			return ACTIVITYPUB_ACTOR_MODE;
+		}
+
+		return $pre;
 	}
 
 	/**
@@ -716,5 +761,73 @@ class Activitypub {
 		if ( 'activitypub_content_visibility' === $meta_key && empty( $meta_value ) ) {
 			\delete_post_meta( $object_id, 'activitypub_content_visibility' );
 		}
+	}
+
+	/**
+	 * Register user meta.
+	 */
+	public static function register_user_meta() {
+		$blog_prefix = $GLOBALS['wpdb']->get_blog_prefix();
+
+		\register_meta(
+			'user',
+			$blog_prefix . 'activitypub_also_known_as',
+			array(
+				'type'              => 'array',
+				'description'       => 'An array of URLs that the user is known by.',
+				'single'            => true,
+				'default'           => array(),
+				'sanitize_callback' => array( Sanitize::class, 'url_list' ),
+			)
+		);
+
+		\register_meta(
+			'user',
+			$blog_prefix . 'activitypub_moved_to',
+			array(
+				'type'              => 'string',
+				'description'       => 'The new URL of the user.',
+				'single'            => true,
+				'sanitize_callback' => 'sanitize_url',
+			)
+		);
+
+		\register_meta(
+			'user',
+			$blog_prefix . 'activitypub_description',
+			array(
+				'type'              => 'string',
+				'description'       => 'The user’s description.',
+				'single'            => true,
+				'default'           => '',
+				'sanitize_callback' => function ( $value ) {
+					return wp_kses( $value, 'user_description' );
+				},
+			)
+		);
+
+		\register_meta(
+			'user',
+			$blog_prefix . 'activitypub_icon',
+			array(
+				'type'              => 'integer',
+				'description'       => 'The attachment ID for user’s profile image.',
+				'single'            => true,
+				'default'           => 0,
+				'sanitize_callback' => 'absint',
+			)
+		);
+
+		\register_meta(
+			'user',
+			$blog_prefix . 'activitypub_header_image',
+			array(
+				'type'              => 'integer',
+				'description'       => 'The attachment ID for the user’s header image.',
+				'single'            => true,
+				'default'           => 0,
+				'sanitize_callback' => 'absint',
+			)
+		);
 	}
 }

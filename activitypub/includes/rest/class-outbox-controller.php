@@ -9,6 +9,7 @@ namespace Activitypub\Rest;
 
 use Activitypub\Collection\Actors;
 use Activitypub\Collection\Outbox;
+use function Activitypub\get_masked_wp_version;
 use function ActivityPub\get_rest_url_by_path;
 
 /**
@@ -113,18 +114,6 @@ class Outbox_Controller extends \WP_REST_Controller {
 		 */
 		$activity_types = apply_filters( 'rest_activitypub_outbox_activity_types', array( 'Announce', 'Create', 'Like', 'Update' ) );
 
-		switch ( $user_id ) {
-			case Actors::APPLICATION_USER_ID:
-				$actor_type = 'application';
-				break;
-			case Actors::BLOG_USER_ID:
-				$actor_type = 'blog';
-				break;
-			default:
-				$actor_type = 'user';
-				break;
-		}
-
 		$args = array(
 			'posts_per_page' => $request->get_param( 'per_page' ),
 			'author'         => $user_id > 0 ? $user_id : null,
@@ -136,7 +125,7 @@ class Outbox_Controller extends \WP_REST_Controller {
 			'meta_query'     => array(
 				array(
 					'key'   => '_activitypub_activity_actor',
-					'value' => $actor_type,
+					'value' => Actors::get_type_by_id( $user_id ),
 				),
 			),
 		);
@@ -177,7 +166,7 @@ class Outbox_Controller extends \WP_REST_Controller {
 		$response = array(
 			'@context'     => array( 'https://www.w3.org/ns/activitystreams' ),
 			'id'           => get_rest_url_by_path( sprintf( 'actors/%d/outbox', $user_id ) ),
-			'generator'    => 'https://wordpress.org/?v=' . \get_bloginfo( 'version' ),
+			'generator'    => 'https://wordpress.org/?v=' . get_masked_wp_version(),
 			'actor'        => $user->get_id(),
 			'type'         => 'OrderedCollectionPage',
 			'partOf'       => get_rest_url_by_path( sprintf( 'actors/%d/outbox', $user_id ) ),

@@ -173,7 +173,7 @@ class User extends Actor {
 	 */
 	public function get_icon() {
 		$icon = \get_user_option( 'activitypub_icon', $this->_id );
-		if ( wp_attachment_is_image( $icon ) ) {
+		if ( false !== $icon && wp_attachment_is_image( $icon ) ) {
 			return array(
 				'type' => 'Image',
 				'url'  => esc_url( wp_get_attachment_url( $icon ) ),
@@ -420,5 +420,32 @@ class User extends Actor {
 	 */
 	public function get_attribution_domains() {
 		return get_attribution_domains();
+	}
+
+	/**
+	 * Returns the alsoKnownAs.
+	 *
+	 * @return array The alsoKnownAs.
+	 */
+	public function get_also_known_as() {
+		$also_known_as = array(
+			\add_query_arg( 'author', $this->_id, \home_url( '/' ) ),
+			$this->get_url(),
+			$this->get_alternate_url(),
+		);
+
+		// phpcs:ignore Universal.Operators.DisallowShortTernary.Found
+		$also_known_as = array_merge( $also_known_as, \get_user_option( 'activitypub_also_known_as', $this->_id ) ?: array() );
+
+		return array_unique( $also_known_as );
+	}
+
+	/**
+	 * Returns the movedTo.
+	 *
+	 * @return string The movedTo.
+	 */
+	public function get_moved_to() {
+		return \get_user_option( 'activitypub_moved_to', $this->_id );
 	}
 }

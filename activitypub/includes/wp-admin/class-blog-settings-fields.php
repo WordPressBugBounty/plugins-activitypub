@@ -70,6 +70,14 @@ class Blog_Settings_Fields {
 			'activitypub_blog_settings',
 			'activitypub_blog_profile'
 		);
+
+		add_settings_field(
+			'activitypub_blog_user_also_known_as',
+			__( 'Account Aliases', 'activitypub' ),
+			array( self::class, 'also_known_as_callback' ),
+			'activitypub_blog_settings',
+			'activitypub_blog_profile'
+		);
 	}
 
 	/**
@@ -120,6 +128,8 @@ class Blog_Settings_Fields {
 			data-choose-text="<?php esc_attr_e( 'Choose a Header Image', 'activitypub' ); ?>"
 			data-update-text="<?php esc_attr_e( 'Change Header Icon', 'activitypub' ); ?>"
 			data-update="<?php esc_attr_e( 'Set as Header Image', 'activitypub' ); ?>"
+			data-width="1500"
+			data-height="500"
 			data-state="<?php echo esc_attr( (int) get_option( 'activitypub_header_image', 0 ) ); ?>">
 			<?php if ( (int) get_option( 'activitypub_header_image', 0 ) ) : ?>
 				<?php esc_html_e( 'Change Header Image', 'activitypub' ); ?>
@@ -221,6 +231,29 @@ class Blog_Settings_Fields {
 			<a href="<?php echo esc_url( admin_url( '/edit.php?post_type=ap_extrafield_blog' ) ); ?>">
 				<?php esc_html_e( 'Manage all', 'activitypub' ); ?>
 			</a>
+		</p>
+		<?php
+	}
+
+	/**
+	 * Also Known As field callback.
+	 */
+	public static function also_known_as_callback() {
+		$also_known_as = \get_option( 'activitypub_blog_user_also_known_as' );
+		?>
+		<label for="activitypub_blog_user_also_known_as">
+			<textarea
+				class="large-text"
+				id="activitypub_blog_user_also_known_as"
+				name="activitypub_blog_user_also_known_as"
+				rows="5"
+			><?php echo esc_textarea( implode( PHP_EOL, (array) $also_known_as ) ); ?></textarea>
+		</label>
+		<p class="description">
+			<?php esc_html_e( 'If you’re moving from another account to this one, you’ll need to create an alias here first before transferring your followers. This step is safe, reversible, and doesn’t affect anything on its own. The migration itself is initiated from your old account.', 'activitypub' ); ?>
+		</p>
+		<p class="description">
+			<?php esc_html_e( 'Enter one URL per line.', 'activitypub' ); ?>
 		</p>
 		<?php
 	}
