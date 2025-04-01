@@ -44,6 +44,11 @@ class Announce {
 			return;
 		}
 
+		// Check if reposts are allowed.
+		if ( ! Comment::is_comment_type_enabled( 'repost' ) ) {
+			return;
+		}
+
 		self::maybe_save_announce( $announcement, $user_id );
 
 		if ( is_string( $announcement['object'] ) ) {
@@ -65,18 +70,19 @@ class Announce {
 		/**
 		 * Fires after an Announce has been received.
 		 *
-		 * @param array $object   The object.
-		 * @param int   $user_id  The id of the local blog-user.
-		 * @param array $activity The activity object.
+		 * @param array                               $object   The object.
+		 * @param int                                 $user_id  The id of the local blog-user.
+		 * @param string                              $type     The type of the activity.
+		 * @param \Activitypub\Activity\Activity|null $activity The activity object.
 		 */
 		\do_action( 'activitypub_inbox', $object, $user_id, $type, $activity );
 
 		/**
 		 * Fires after an Announce of a specific type has been received.
 		 *
-		 * @param array $object   The object.
-		 * @param int   $user_id  The id of the local blog-user.
-		 * @param array $activity The activity object.
+		 * @param array                               $object   The object.
+		 * @param int                                 $user_id  The id of the local blog-user.
+		 * @param \Activitypub\Activity\Activity|null $activity The activity object.
 		 */
 		\do_action( "activitypub_inbox_{$type}", $object, $user_id, $activity );
 	}

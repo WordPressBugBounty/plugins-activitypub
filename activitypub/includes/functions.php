@@ -9,6 +9,7 @@ namespace Activitypub;
 
 use WP_Error;
 use Activitypub\Activity\Activity;
+use Activitypub\Activity\Actor;
 use Activitypub\Activity\Base_Object;
 use Activitypub\Collection\Actors;
 use Activitypub\Collection\Outbox;
@@ -801,7 +802,6 @@ function set_wp_object_state( $wp_object, $state ) {
 		 * Allow plugins to mark WordPress objects as federated.
 		 *
 		 * @param \WP_Comment|\WP_Post $wp_object The WordPress object.
-		 * @param string               $state     The state of the object.
 		 */
 		\apply_filters( 'activitypub_mark_wp_object_as_federated', $wp_object );
 	}
@@ -825,6 +825,7 @@ function get_wp_object_state( $wp_object ) {
 		/**
 		 * Allow plugins to get the federation state of a WordPress object.
 		 *
+		 * @param false                $state     The state of the object.
 		 * @param \WP_Comment|\WP_Post $wp_object The WordPress object.
 		 */
 		return \apply_filters( 'activitypub_get_wp_object_state', false, $wp_object );
@@ -862,8 +863,9 @@ function get_post_type_description( $post_type ) {
 	/**
 	 * Allow plugins to get the description of a post type.
 	 *
-	 * @param string        $description The description of the post type.
-	 * @param \WP_Post_Type $post_type   The post type object.
+	 * @param string        $description    The description of the post type.
+	 * @param string        $post_type_name The post type name.
+	 * @param \WP_Post_Type $post_type      The post type object.
 	 */
 	return apply_filters( 'activitypub_post_type_description', $description, $post_type->name, $post_type );
 }
@@ -1459,14 +1461,14 @@ function is_self_ping( $id ) {
 /**
  * Add an object to the outbox.
  *
- * @param mixed   $data               The object to add to the outbox.
- * @param string  $activity_type      The type of the Activity.
- * @param integer $user_id            The User-ID.
- * @param string  $content_visibility The visibility of the content. See `constants.php` for possible values: `ACTIVITYPUB_CONTENT_VISIBILITY_*`.
+ * @param mixed       $data               The object to add to the outbox.
+ * @param string|null $activity_type      Optional. The type of the Activity or null if `$data` is an Activity. Default null.
+ * @param integer     $user_id            Optional. The User-ID. Default 0.
+ * @param string      $content_visibility Optional. The visibility of the content. See `constants.php` for possible values: `ACTIVITYPUB_CONTENT_VISIBILITY_*`. Default null.
  *
  * @return boolean|int The ID of the outbox item or false on failure.
  */
-function add_to_outbox( $data, $activity_type = 'Create', $user_id = 0, $content_visibility = null ) {
+function add_to_outbox( $data, $activity_type = null, $user_id = 0, $content_visibility = null ) {
 	$transformer = Transformer_Factory::get_transformer( $data );
 
 	if ( ! $transformer || is_wp_error( $transformer ) ) {
@@ -1479,9 +1481,13 @@ function add_to_outbox( $data, $activity_type = 'Create', $user_id = 0, $content
 		$content_visibility = $transformer->get_content_visibility();
 	}
 
-	$activity_object = $transformer->to_object();
+	if ( $activity_type ) {
+		$activity = $transformer->to_activity( $activity_type );
+	} else {
+		$activity = $transformer->to_object();
+	}
 
-	if ( ! $activity_object || \is_wp_error( $activity_object ) ) {
+	if ( ! $activity || \is_wp_error( $activity ) ) {
 		return false;
 	}
 
@@ -1494,7 +1500,7 @@ function add_to_outbox( $data, $activity_type = 'Create', $user_id = 0, $content
 		}
 	}
 
-	$outbox_activity_id = Outbox::add( $activity_object, $activity_type, $user_id, $content_visibility );
+	$outbox_activity_id = Outbox::add( $activity, $user_id, $content_visibility );
 
 	if ( ! $outbox_activity_id ) {
 		return false;
@@ -1503,12 +1509,12 @@ function add_to_outbox( $data, $activity_type = 'Create', $user_id = 0, $content
 	/**
 	 * Action triggered after an object has been added to the outbox.
 	 *
-	 * @param int                               $outbox_activity_id The ID of the outbox item.
-	 * @param \Activitypub\Activity\Base_Object $activity_object    The activity object.
-	 * @param int                               $user_id            The User-ID.
-	 * @param string                            $content_visibility The visibility of the content. See `constants.php` for possible values: `ACTIVITYPUB_CONTENT_VISIBILITY_*`.
+	 * @param int      $outbox_activity_id The ID of the outbox item.
+	 * @param Activity $activity           The activity object.
+	 * @param int      $user_id            The User-ID.
+	 * @param string   $content_visibility The visibility of the content. See `constants.php` for possible values: `ACTIVITYPUB_CONTENT_VISIBILITY_*`.
 	 */
-	\do_action( 'post_activitypub_add_to_outbox', $outbox_activity_id, $activity_object, $user_id, $content_visibility );
+	\do_action( 'post_activitypub_add_to_outbox', $outbox_activity_id, $activity, $user_id, $content_visibility );
 
 	set_wp_object_state( $data, 'federated' );
 
@@ -1530,38 +1536,7 @@ function is_activity( $data ) {
 	 *
 	 * @param array $types The activity types.
 	 */
-	$types = apply_filters(
-		'activitypub_activity_types',
-		array(
-			'Accept',
-			'Add',
-			'Announce',
-			'Arrive',
-			'Block',
-			'Create',
-			'Delete',
-			'Dislike',
-			'Follow',
-			'Flag',
-			'Ignore',
-			'Invite',
-			'Join',
-			'Leave',
-			'Like',
-			'Listen',
-			'Move',
-			'Offer',
-			'Read',
-			'Reject',
-			'Remove',
-			'TentativeAccept',
-			'TentativeReject',
-			'Travel',
-			'Undo',
-			'Update',
-			'View',
-		)
-	);
+	$types = apply_filters( 'activitypub_activity_types', Activity::TYPES );
 
 	if ( is_string( $data ) ) {
 		return in_array( $data, $types, true );
@@ -1593,16 +1568,7 @@ function is_actor( $data ) {
 	 *
 	 * @param array $types The actor types.
 	 */
-	$types = apply_filters(
-		'activitypub_actor_types',
-		array(
-			'Application',
-			'Group',
-			'Organization',
-			'Person',
-			'Service',
-		)
-	);
+	$types = apply_filters( 'activitypub_actor_types', Actor::TYPES );
 
 	if ( is_string( $data ) ) {
 		return in_array( $data, $types, true );

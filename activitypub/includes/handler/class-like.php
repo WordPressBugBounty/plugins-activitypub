@@ -20,7 +20,7 @@ class Like {
 	 * Initialize the class, registering WordPress hooks.
 	 */
 	public static function init() {
-		\add_action( 'activitypub_inbox_like', array( self::class, 'handle_like' ), 10, 3 );
+		\add_action( 'activitypub_inbox_like', array( self::class, 'handle_like' ), 10, 2 );
 		\add_filter( 'activitypub_get_outbox_activity', array( self::class, 'outbox_activity' ) );
 	}
 
@@ -31,7 +31,7 @@ class Like {
 	 * @param int   $user_id The ID of the local blog user.
 	 */
 	public static function handle_like( $like, $user_id ) {
-		if ( ACTIVITYPUB_DISABLE_INCOMING_INTERACTIONS ) {
+		if ( ! Comment::is_comment_type_enabled( 'like' ) ) {
 			return;
 		}
 
