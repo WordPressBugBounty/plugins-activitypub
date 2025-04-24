@@ -159,11 +159,12 @@ class Settings {
 
 		\register_setting(
 			'activitypub',
-			'activitypub_mailer_new_dm',
+			'activitypub_relays',
 			array(
-				'type'        => 'boolean',
-				'description' => \__( 'Send notifications via e-mail when a direct message is received.', 'activitypub' ),
-				'default'     => '0',
+				'type'              => 'array',
+				'description'       => \__( 'Relays', 'activitypub' ),
+				'default'           => array(),
+				'sanitize_callback' => array( Sanitize::class, 'url_list' ),
 			)
 		);
 
@@ -207,17 +208,6 @@ class Settings {
 			)
 		);
 
-		\register_setting(
-			'activitypub',
-			'activitypub_relays',
-			array(
-				'type'              => 'array',
-				'description'       => \__( 'Relays', 'activitypub' ),
-				'default'           => array(),
-				'sanitize_callback' => array( Sanitize::class, 'url_list' ),
-			)
-		);
-
 		// Blog-User Settings.
 		\register_setting(
 			'activitypub_blog',
@@ -249,6 +239,36 @@ class Settings {
 				'type'        => 'integer',
 				'description' => \__( 'The Attachment-ID of the Sites Header-Image', 'activitypub' ),
 				'default'     => null,
+			)
+		);
+
+		\register_setting(
+			'activitypub_blog',
+			'activitypub_blog_user_mailer_new_dm',
+			array(
+				'type'        => 'integer',
+				'description' => 'Send a notification when someone sends a user of the blog a direct message.',
+				'default'     => 1,
+			)
+		);
+
+		\register_setting(
+			'activitypub_blog',
+			'activitypub_blog_user_mailer_new_follower',
+			array(
+				'type'        => 'integer',
+				'description' => 'Send a notification when someone starts to follow a user of the blog.',
+				'default'     => 1,
+			)
+		);
+
+		\register_setting(
+			'activitypub_blog',
+			'activitypub_blog_user_mailer_new_mention',
+			array(
+				'type'        => 'integer',
+				'description' => 'Send a notification when someone mentions a user of the blog.',
+				'default'     => 1,
 			)
 		);
 
