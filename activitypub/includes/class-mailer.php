@@ -2,7 +2,7 @@
 /**
  * Mailer Class.
  *
- * @package ActivityPub
+ * @package Activitypub
  */
 
 namespace Activitypub;
@@ -22,7 +22,7 @@ class Mailer {
 
 		\add_action( 'activitypub_inbox_follow', array( self::class, 'new_follower' ), 10, 2 );
 		\add_action( 'activitypub_inbox_create', array( self::class, 'direct_message' ), 10, 2 );
-		\add_action( 'activitypub_inbox_create', array( self::class, 'mention' ), 10, 2 );
+		\add_action( 'activitypub_inbox_create', array( self::class, 'mention' ), 20, 2 );  /** After @see \Activitypub\Handler\Create::handle_create() */
 	}
 
 	/**
@@ -129,9 +129,7 @@ class Mailer {
 			return;
 		}
 
-		if ( empty( $actor['webfinger'] ) ) {
-			$actor['webfinger'] = '@' . ( $actor['preferredUsername'] ?? $actor['name'] ) . '@' . \wp_parse_url( $actor['url'], PHP_URL_HOST );
-		}
+		$actor = self::normalize_actor( $actor );
 
 		$template_args = array_merge(
 			$actor,
@@ -219,9 +217,7 @@ class Mailer {
 			return;
 		}
 
-		if ( empty( $actor['webfinger'] ) ) {
-			$actor['webfinger'] = '@' . ( $actor['preferredUsername'] ?? $actor['name'] ) . '@' . \wp_parse_url( $actor['url'], PHP_URL_HOST );
-		}
+		$actor = self::normalize_actor( $actor );
 
 		$template_args = array(
 			'activity' => $activity,
@@ -275,6 +271,14 @@ class Mailer {
 			return;
 		}
 
+		if (
+			// Do not send a mention notification if the activity is a reply to a local post or comment.
+			is_activity_reply( $activity ) &&
+			object_id_to_comment( $activity['object']['id'] )
+		) {
+			return;
+		}
+
 		if ( $user_id > Actors::BLOG_USER_ID ) {
 			if ( ! \get_user_option( 'activitypub_mailer_new_mention', $user_id ) ) {
 				return;
@@ -294,9 +298,7 @@ class Mailer {
 			return;
 		}
 
-		if ( empty( $actor['webfinger'] ) ) {
-			$actor['webfinger'] = '@' . ( $actor['preferredUsername'] ?? $actor['name'] ) . '@' . \wp_parse_url( $actor['url'], PHP_URL_HOST );
-		}
+		$actor = self::normalize_actor( $actor );
 
 		$template_args = array(
 			'activity' => $activity,
@@ -333,5 +335,31 @@ class Mailer {
 		\wp_mail( $email, $subject, $html_message, array( 'Content-type: text/html' ) );
 
 		\remove_action( 'phpmailer_init', $alt_function );
+	}
+
+	/**
+	 * Apply defaults to the actor object.
+	 *
+	 * Ensure that the actor object has a name, url, and webfinger.
+	 *
+	 * @param array $actor The actor object.
+	 *
+	 * @return array The inflated actor object.
+	 */
+	private static function normalize_actor( $actor ) {
+		if ( empty( $actor['name'] ) ) {
+			$actor['name'] = $actor['preferredUsername'];
+		}
+
+		if ( empty( $actor['url'] ) ) {
+			$actor['url'] = $actor['id'];
+		}
+		$actor['url'] = object_to_uri( $actor['url'] );
+
+		if ( empty( $actor['webfinger'] ) ) {
+			$actor['webfinger'] = '@' . ( $actor['preferredUsername'] ?? $actor['name'] ) . '@' . \wp_parse_url( $actor['url'], PHP_URL_HOST );
+		}
+
+		return $actor;
 	}
 }

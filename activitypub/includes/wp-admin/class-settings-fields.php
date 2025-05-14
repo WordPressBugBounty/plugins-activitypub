@@ -7,6 +7,9 @@
 
 namespace Activitypub\WP_Admin;
 
+use function Activitypub\home_host;
+use function Activitypub\site_supports_blocks;
+
 /**
  * Class Settings_Fields.
  */
@@ -80,14 +83,16 @@ class Settings_Fields {
 			);
 		}
 
-		add_settings_field(
-			'activitypub_max_image_attachments',
-			__( 'Media attachments', 'activitypub' ),
-			array( self::class, 'render_max_image_attachments_field' ),
-			'activitypub_settings',
-			'activitypub_activities',
-			array( 'label_for' => 'activitypub_max_image_attachments' )
-		);
+		if ( ! site_supports_blocks() || \is_plugin_active( 'classic-editor/classic-editor.php' ) ) {
+			add_settings_field(
+				'activitypub_max_image_attachments',
+				__( 'Media attachments', 'activitypub' ),
+				array( self::class, 'render_max_image_attachments_field' ),
+				'activitypub_settings',
+				'activitypub_activities',
+				array( 'label_for' => 'activitypub_max_image_attachments' )
+			);
+		}
 
 		add_settings_field(
 			'activitypub_support_post_types',
@@ -276,7 +281,7 @@ class Settings_Fields {
 	public static function render_max_image_attachments_field() {
 		$value = get_option( 'activitypub_max_image_attachments', ACTIVITYPUB_MAX_IMAGE_ATTACHMENTS );
 		?>
-		<input id="activitypub_max_image_attachments" value="<?php echo esc_attr( $value ); ?>" name="activitypub_max_image_attachments" type="number" min="0" class="small-text" />
+		<input id="activitypub_max_image_attachments" value="<?php echo esc_attr( $value ); ?>" name="activitypub_max_image_attachments" type="number" min="0" max="10" class="small-text" />
 		<p class="description">
 			<?php
 			echo wp_kses(
@@ -342,7 +347,7 @@ class Settings_Fields {
 			</p>
 			<p>
 				<label>
-					<input type="checkbox" name="activitypub_allow_announces" value="1" <?php checked( '1', $allow_reposts ); ?> />
+					<input type="checkbox" name="activitypub_allow_reposts" value="1" <?php checked( '1', $allow_reposts ); ?> />
 					<?php esc_html_e( 'Receive reblogs (boosts)', 'activitypub' ); ?>
 				</label>
 			</p>
@@ -385,14 +390,14 @@ class Settings_Fields {
 	 * Render attribution domains field.
 	 */
 	public static function render_attribution_domains_field() {
-		$value = get_option( 'activitypub_attribution_domains', \Activitypub\home_host() );
+		$value = get_option( 'activitypub_attribution_domains', home_host() );
 		?>
 		<textarea
 			id="activitypub_attribution_domains"
 			name="activitypub_attribution_domains"
 			class="large-text"
 			cols="50" rows="5"
-			placeholder="<?php echo esc_attr( \Activitypub\home_host() ); ?>"
+			placeholder="<?php echo esc_attr( home_host() ); ?>"
 		><?php echo esc_textarea( $value ); ?></textarea>
 		<p class="description"><?php esc_html_e( 'Websites allowed to credit you, one per line. Protects from false attributions.', 'activitypub' ); ?></p>
 		<?php

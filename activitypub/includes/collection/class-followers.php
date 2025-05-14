@@ -152,10 +152,11 @@ class Followers {
 	/**
 	 * Get the Followers of a given user.
 	 *
-	 * @param int   $user_id The ID of the WordPress User.
-	 * @param int   $number  Maximum number of results to return.
-	 * @param int   $page    Page number.
-	 * @param array $args    The WP_Query arguments.
+	 * @param int|null $user_id The ID of the WordPress User.
+	 * @param int      $number  Maximum number of results to return.
+	 * @param int      $page    Page number.
+	 * @param array    $args    The WP_Query arguments.
+	 *
 	 * @return Follower[] List of `Follower` objects.
 	 */
 	public static function get_followers( $user_id, $number = -1, $page = null, $args = array() ) {
@@ -166,10 +167,10 @@ class Followers {
 	/**
 	 * Get the Followers of a given user, along with a total count for pagination purposes.
 	 *
-	 * @param int   $user_id The ID of the WordPress User.
-	 * @param int   $number  Maximum number of results to return.
-	 * @param int   $page    Page number.
-	 * @param array $args    The WP_Query arguments.
+	 * @param int|null $user_id The ID of the WordPress User.
+	 * @param int      $number  Maximum number of results to return.
+	 * @param int      $page    Page number.
+	 * @param array    $args    The WP_Query arguments.
 	 *
 	 * @return array {
 	 *      Data about the followers.
@@ -478,5 +479,16 @@ class Followers {
 			'_activitypub_errors',
 			$error_message
 		);
+	}
+
+	/**
+	 * Clear the errors for a Follower.
+	 *
+	 * @param int $post_id The ID of the WordPress Custom-Post-Type.
+	 *
+	 * @return bool True on success, false on failure.
+	 */
+	public static function clear_errors( $post_id ) {
+		return \delete_post_meta( $post_id, '_activitypub_errors' );
 	}
 }
