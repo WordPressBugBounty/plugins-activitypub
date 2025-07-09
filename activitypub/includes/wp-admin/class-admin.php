@@ -114,9 +114,26 @@ class Admin {
 	}
 
 	/**
+	 * Load user following list page
+	 */
+	public static function following_list_page() {
+		// User has to be able to publish posts.
+		if ( user_can_activitypub( \get_current_user_id() ) ) {
+			\load_template( ACTIVITYPUB_PLUGIN_DIR . 'templates/user-following-list.php' );
+		}
+	}
+
+	/**
 	 * Adds the follower list to the Help tab.
 	 */
 	public static function add_followers_list_help_tab() {
+		// todo.
+	}
+
+	/**
+	 * Adds the following list to the Help tab.
+	 */
+	public static function add_following_list_help_tab() {
 		// todo.
 	}
 
@@ -253,23 +270,29 @@ class Admin {
 	 * Disables the edit_comment capability for federated comments.
 	 */
 	public static function edit_comment() {
-		// Disable the edit_comment capability for federated comments.
-		\add_filter(
-			'user_has_cap',
-			function ( $all_caps, $caps, $arg ) {
-				if ( 'edit_comment' !== $arg[0] ) {
-					return $all_caps;
-				}
+		// phpcs:ignore WordPress.Security.NonceVerification
+		$comment_id = \absint( $_GET['c'] ?? 0 );
+		if ( Comment::was_received( $comment_id ) ) {
+			$path = 'edit-comments.php';
 
-				if ( was_comment_received( $arg[2] ) ) {
-					return false;
-				}
+			switch ( \wp_get_comment_status( $comment_id ) ) { // phpcs:ignore WordPress.Security.NonceVerification
+				case 'spam':
+					$path = 'edit-comments.php?comment_status=spam';
+					break;
 
-				return $all_caps;
-			},
-			1,
-			3
-		);
+				case 'trash':
+					$path = 'edit-comments.php?comment_status=trash';
+					break;
+
+				case 'unapproved':
+					$path = 'edit-comments.php?comment_status=moderated';
+					break;
+			}
+
+			// Redirect to the appropriate comments page.
+			\wp_safe_redirect( \admin_url( $path ) );
+			exit;
+		}
 	}
 
 	/**

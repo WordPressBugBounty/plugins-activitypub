@@ -72,10 +72,9 @@ foreach ( Comment::get_comment_types() as $_type => $type_object ) {
 		'items' => array_map(
 			function ( $comment ) {
 				return array(
-					'id'     => $comment->comment_ID,
-					'name'   => $comment->comment_author,
+					'name'   => html_entity_decode( $comment->comment_author ),
 					'url'    => $comment->comment_author_url,
-					'avatar' => get_comment_meta( $comment->comment_ID, 'avatar_url', true ),
+					'avatar' => get_avatar_url( $comment ),
 				);
 			},
 			$_comments
@@ -138,6 +137,28 @@ $wrapper_attributes = get_block_wrapper_attributes(
 		'data-wp-init'        => 'callbacks.initReactions',
 	)
 );
+
+ob_start();
+?>
+<ul class="reactions-list">
+	<template data-wp-each="context.modal.items">
+		<li class="reaction-item">
+			<a data-wp-bind--href="context.item.url" target="_blank" rel="noopener noreferrer">
+				<img
+					alt=""
+					data-wp-bind--alt="context.item.name"
+					data-wp-bind--src="context.item.avatar"
+					data-wp-on--error="callbacks.setDefaultAvatar"
+					src=""
+				/>
+				<span class="reaction-name" data-wp-text="context.item.name"></span>
+			</a>
+		</li>
+	</template>
+</ul>
+<?php
+$modal_content = ob_get_clean();
+
 ?>
 
 <div <?php echo $wrapper_attributes; // phpcs:ignore WordPress.Security.EscapeOutput ?>>
@@ -149,7 +170,7 @@ $wrapper_attributes = get_block_wrapper_attributes(
 			/* translators: %s: reaction type. */
 			$aria_label = sprintf( __( 'View all %s', 'activitypub' ), Comment::get_comment_type_attr( $_type, 'label' ) );
 			?>
-		<div class="reaction-group">
+		<div class="reaction-group" data-reaction-type="<?php echo esc_attr( $_type ); ?>">
 			<ul class="reaction-avatars">
 				<template data-wp-each="context.reactions.<?php echo esc_attr( $_type ); ?>.items">
 					<li>
@@ -186,25 +207,6 @@ $wrapper_attributes = get_block_wrapper_attributes(
 	</div>
 
 	<?php
-	$modal_content = '
-		<ul class="reactions-list">
-			<template data-wp-each="context.modal.items">
-				<li class="reaction-item">
-					<a data-wp-bind--href="context.item.url" target="_blank" rel="noopener noreferrer">
-						<img
-							data-wp-bind--src="context.item.avatar"
-							data-wp-bind--alt="context.item.name"
-							data-wp-on--error="callbacks.setDefaultAvatar"
-							src=""
-							alt=""
-						/>
-						<span class="reaction-name" data-wp-text="context.item.name"></span>
-					</a>
-				</li>
-			</template>
-		</ul>
-	';
-
 	// Render the modal using the Blocks class.
 	Blocks::render_modal(
 		array(
