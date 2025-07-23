@@ -8,6 +8,7 @@
 namespace Activitypub\Collection;
 
 use Activitypub\Scheduler;
+use Activitypub\Webfinger;
 use Activitypub\Activity\Activity;
 use Activitypub\Activity\Base_Object;
 
@@ -37,6 +38,14 @@ class Outbox {
 
 		if ( ! $activity->get_actor() ) {
 			$activity->set_actor( Actors::get_by_id( $user_id )->get_id() );
+		}
+
+		if ( ! \filter_var( $object_id, FILTER_VALIDATE_URL ) ) {
+			$object_id = Webfinger::resolve( $object_id );
+		}
+
+		if ( \is_wp_error( $object_id ) ) {
+			return $object_id;
 		}
 
 		// Save activity in the context of an activitypub request.
@@ -171,7 +180,9 @@ class Outbox {
 			$type = 'Remove';
 		}
 
-		return add_to_outbox( $activity, $type, $outbox_item->post_author );
+		$visibility = \get_post_meta( $outbox_item->ID, 'activitypub_content_visibility', true );
+
+		return add_to_outbox( $activity, $type, $outbox_item->post_author, $visibility );
 	}
 
 	/**
@@ -187,8 +198,8 @@ class Outbox {
 		$post_id = $wpdb->get_var(
 			$wpdb->prepare(
 				"SELECT ID FROM $wpdb->posts WHERE guid=%s AND post_type=%s",
-				esc_sql( $guid ),
-				esc_sql( self::POST_TYPE )
+				\esc_url( $guid ),
+				self::POST_TYPE
 			)
 		);
 

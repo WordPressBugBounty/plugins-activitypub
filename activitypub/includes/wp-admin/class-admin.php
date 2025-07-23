@@ -7,9 +7,9 @@
 
 namespace Activitypub\WP_Admin;
 
-use Activitypub\Comment;
 use Activitypub\Collection\Actors;
 use Activitypub\Collection\Extra_Fields;
+use Activitypub\Comment;
 use Activitypub\Model\Blog;
 
 use function Activitypub\count_followers;
@@ -88,28 +88,12 @@ class Admin {
 	}
 
 	/**
-	 * Display one admin menu notice about configuration problems or conflicts.
-	 *
-	 * @param string $admin_notice The notice to display.
-	 * @param string $level        The level of the notice (error, warning, success, info).
-	 */
-	private static function show_admin_notice( $admin_notice, $level ) {
-		?>
-
-		<div class="notice notice-<?php echo esc_attr( $level ); ?>">
-			<p><?php echo wp_kses( $admin_notice, 'data' ); ?></p>
-		</div>
-
-		<?php
-	}
-
-	/**
 	 * Load user settings page
 	 */
 	public static function followers_list_page() {
 		// User has to be able to publish posts.
 		if ( user_can_activitypub( \get_current_user_id() ) ) {
-			\load_template( ACTIVITYPUB_PLUGIN_DIR . 'templates/user-followers-list.php' );
+			\load_template( ACTIVITYPUB_PLUGIN_DIR . 'templates/followers-list.php' );
 		}
 	}
 
@@ -119,22 +103,38 @@ class Admin {
 	public static function following_list_page() {
 		// User has to be able to publish posts.
 		if ( user_can_activitypub( \get_current_user_id() ) ) {
-			\load_template( ACTIVITYPUB_PLUGIN_DIR . 'templates/user-following-list.php' );
+			\load_template( ACTIVITYPUB_PLUGIN_DIR . 'templates/following-list.php' );
 		}
 	}
 
 	/**
-	 * Adds the follower list to the Help tab.
+	 * Creates the followers and following list tables in ActivityPub settings.
 	 */
-	public static function add_followers_list_help_tab() {
-		// todo.
+	public static function add_settings_list_tables() {
+		$tab = \sanitize_text_field( \wp_unslash( $_GET['tab'] ?? 'welcome' ) ); // phpcs:ignore WordPress.Security.NonceVerification
+
+		switch ( $tab ) {
+			case 'followers':
+				self::add_followers_list_table();
+				break;
+			case 'following':
+				self::add_following_list_table();
+				break;
+		}
 	}
 
 	/**
-	 * Adds the following list to the Help tab.
+	 * Creates the followers list table.
 	 */
-	public static function add_following_list_help_tab() {
-		// todo.
+	public static function add_followers_list_table() {
+		$GLOBALS['followers_list_table'] = new Table\Followers();
+	}
+
+	/**
+	 * Creates the following list table.
+	 */
+	public static function add_following_list_table() {
+		$GLOBALS['following_list_table'] = new Table\Following();
 	}
 
 	/**

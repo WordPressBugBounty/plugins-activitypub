@@ -662,8 +662,7 @@ class Actors {
 			),
 		);
 
-		$posts = new \WP_Query( $args );
-		return $posts->get_posts();
+		return ( new \WP_Query() )->query( $args );
 	}
 
 	/**
@@ -689,8 +688,7 @@ class Actors {
 			),
 		);
 
-		$posts = new \WP_Query( $args );
-		return $posts->get_posts();
+		return ( new \WP_Query() )->query( $args );
 	}
 
 	/**
@@ -717,7 +715,13 @@ class Actors {
 			$json = \get_post_meta( $post->ID, '_activitypub_actor_json', true );
 		}
 
-		return Actor::init_from_json( $json );
+		$actor = Actor::init_from_json( $json );
+
+		if ( \is_wp_error( $actor ) ) {
+			self::add_error( $post->ID, $actor );
+		}
+
+		return $actor;
 	}
 
 	/**
