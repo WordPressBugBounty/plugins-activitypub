@@ -48,7 +48,7 @@ class Followers extends \WP_List_Table {
 			$this->follow_url = \admin_url( 'options-general.php?page=activitypub&tab=following' );
 		} else {
 			$this->user_id    = \get_current_user_id();
-			$this->follow_url = \admin_url( 'users.php?page=activitypub-following' );
+			$this->follow_url = \admin_url( 'users.php?page=activitypub-following-list' );
 
 			\add_action( 'admin_notices', array( $this, 'process_admin_notices' ) );
 		}
@@ -118,7 +118,21 @@ class Followers extends \WP_List_Table {
 					}
 				}
 				break;
+			case 'follow':
+				$redirect_to = \remove_query_arg( array( 'follower', 'followers' ), $redirect_to );
 
+				if ( isset( $_GET['follower'], $_GET['_wpnonce'] ) ) {
+					$follower = \absint( $_GET['follower'] );
+					$nonce    = \sanitize_text_field( \wp_unslash( $_GET['_wpnonce'] ) );
+
+					if ( \wp_verify_nonce( $nonce, 'follow-follower_' . $follower ) ) {
+						Following::follow( $follower, $this->user_id );
+
+						\add_settings_error( 'activitypub', 'followed', \__( 'Account followed.', 'activitypub' ), 'success' );
+
+					}
+				}
+				break;
 			default:
 				break;
 		}
@@ -182,7 +196,7 @@ class Followers extends \WP_List_Table {
 		}
 
 		if ( ! empty( $_GET['s'] ) ) {
-			$args['s'] = self::normalize_search_term( \wp_unslash( $_GET['s'] ) ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+			$args['s'] = $this->normalize_search_term( \wp_unslash( $_GET['s'] ) ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
 		}
 
 		$followers_with_count = Follower_Collection::get_followers_with_count( $this->user_id, $per_page, $page_num, $args );
@@ -213,7 +227,7 @@ class Followers extends \WP_List_Table {
 				'post_title' => $actor->get_name() ?? $actor->get_preferred_username(),
 				'username'   => $actor->get_preferred_username(),
 				'url'        => $url,
-				'webfinger'  => self::get_webfinger( $actor ),
+				'webfinger'  => $this->get_webfinger( $actor ),
 				'identifier' => $actor->get_id(),
 				'modified'   => $follower->post_modified_gmt,
 			);
@@ -343,11 +357,11 @@ class Followers extends \WP_List_Table {
 	public function no_items() {
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
 		$search         = \sanitize_text_field( \wp_unslash( $_GET['s'] ?? '' ) );
-		$actor_or_false = $this->_is_followable( $search );
+		$actor_or_false = $this->is_followable( $search );
 
 		if ( $actor_or_false ) {
 			\printf(
-				/* translators: %s: Actor name. */
+				/* translators: 1: Actor name, 2: Follow link */
 				\esc_html__( '%1$s is not following you, would you like to %2$s instead?', 'activitypub' ),
 				\esc_html( $actor_or_false->post_title ),
 				\sprintf(
@@ -377,20 +391,24 @@ class Followers extends \WP_List_Table {
 		$actions = array(
 			'delete' => sprintf(
 				'<a href="%s" aria-label="%s">%s</a>',
-				\wp_nonce_url(
-					\add_query_arg(
-						array(
-							'action'   => 'delete',
-							'follower' => $item['id'],
-						)
-					),
-					'delete-follower_' . $item['id']
-				),
+				$this->get_action_url( 'delete', $item['id'] ),
 				/* translators: %s: username. */
 				\esc_attr( \sprintf( \__( 'Delete %s', 'activitypub' ), $item['username'] ) ),
 				\esc_html__( 'Delete', 'activitypub' )
 			),
 		);
+
+		if ( \boolval( \get_option( 'activitypub_following_ui', '0' ) ) ) {
+			if ( ! Following::check_status( $this->user_id, $item['id'] ) ) {
+				$actions['follow'] = \sprintf(
+					'<a href="%s" aria-label="%s">%s</a>',
+					$this->get_action_url( 'follow', $item['id'] ),
+					/* translators: %s: username. */
+					\esc_attr( \sprintf( \__( 'Follow %s', 'activitypub' ), $item['username'] ) ),
+					\esc_html__( 'Follow back', 'activitypub' )
+				);
+			}
+		}
 
 		return $this->row_actions( $actions );
 	}
@@ -402,7 +420,11 @@ class Followers extends \WP_List_Table {
 	 *
 	 * @return \WP_Post|false The actor post or false.
 	 */
-	private function _is_followable( $search ) { // phpcs:ignore
+	private function is_followable( $search ) {
+		if ( '1' !== get_option( 'activitypub_following_ui', '0' ) ) {
+			return false;
+		}
+
 		if ( empty( $search ) ) {
 			return false;
 		}

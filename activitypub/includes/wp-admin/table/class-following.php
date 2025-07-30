@@ -202,7 +202,7 @@ class Following extends \WP_List_Table {
 		}
 
 		if ( isset( $_GET['s'] ) ) {
-			$args['s'] = self::normalize_search_term( \wp_unslash( $_GET['s'] ) ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+			$args['s'] = $this->normalize_search_term( \wp_unslash( $_GET['s'] ) ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
 		}
 
 		if ( isset( $_GET['status'] ) ) {
@@ -244,7 +244,7 @@ class Following extends \WP_List_Table {
 				'post_title' => $actor->get_name() ?? $actor->get_preferred_username(),
 				'username'   => $actor->get_preferred_username(),
 				'url'        => $url,
-				'webfinger'  => self::get_webfinger( $actor ),
+				'webfinger'  => $this->get_webfinger( $actor ),
 				'status'     => Following_Collection::check_status( $this->user_id, $following->ID ),
 				'identifier' => $actor->get_id(),
 				'modified'   => $following->post_modified_gmt,
@@ -369,7 +369,7 @@ class Following extends \WP_List_Table {
 			( ! isset( $_GET['status'] ) || Following_Collection::ALL === $_GET['status'] ) &&
 			( Following_Collection::PENDING === $item['status'] )
 		) {
-			$status = \sprintf( '<strong> — %s</strong>', \esc_html__( 'Pending', 'activitypub' ) );
+			$status = \sprintf( '<strong class="pending"> — %s</strong>', \esc_html__( 'Pending', 'activitypub' ) );
 		}
 
 		return sprintf(
@@ -457,8 +457,9 @@ class Following extends \WP_List_Table {
 	 */
 	public function single_row( $item ) {
 		\printf(
-			"<tr id='following-%s'>",
-			\esc_attr( $item['id'] )
+			'<tr id="following-%1$s" class="status-%2$s">',
+			\esc_attr( $item['id'] ),
+			\esc_attr( $item['status'] )
 		);
 		$this->single_row_columns( $item );
 		\printf( "</tr>\n" );
@@ -480,15 +481,7 @@ class Following extends \WP_List_Table {
 		$actions = array(
 			'unfollow' => sprintf(
 				'<a href="%s" aria-label="%s">%s</a>',
-				\wp_nonce_url(
-					\add_query_arg(
-						array(
-							'action'   => 'delete',
-							'follower' => $item['id'],
-						)
-					),
-					'delete-follower_' . $item['id']
-				),
+				$this->get_action_url( 'delete', $item['id'] ),
 				/* translators: %s: username. */
 				\esc_attr( \sprintf( \__( 'Unfollow %s', 'activitypub' ), $item['username'] ) ),
 				\esc_html__( 'Unfollow', 'activitypub' )

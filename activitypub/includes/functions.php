@@ -1048,9 +1048,7 @@ function register_comment_type( $comment_type, $args = array() ) {
  */
 function normalize_url( $url ) {
 	$url = \untrailingslashit( $url );
-	$url = \str_replace( 'https://', '', $url );
-	$url = \str_replace( 'http://', '', $url );
-	$url = \str_replace( 'www.', '', $url );
+	$url = \preg_replace( '/^https?:\/\/(www\.)?/', '', $url );
 
 	return $url;
 }
@@ -1063,7 +1061,7 @@ function normalize_url( $url ) {
  * @return string The normalized host.
  */
 function normalize_host( $host ) {
-	return \str_replace( 'www.', '', $host );
+	return \preg_replace( '/^www\./', '', $host );
 }
 
 /**
@@ -1201,7 +1199,7 @@ function generate_post_summary( $post, $length = 500 ) {
 	 * @param string $excerpt_more The excerpt more.
 	 */
 	$excerpt_more = \apply_filters( 'activitypub_excerpt_more', '[…]' );
-	$length       = $length - strlen( $excerpt_more );
+	$length       = $length - \mb_strlen( $excerpt_more, 'UTF-8' );
 
 	$content = \sanitize_post_field( 'post_excerpt', $post->post_excerpt, $post->ID );
 
@@ -1223,13 +1221,13 @@ function generate_post_summary( $post, $length = 500 ) {
 	}
 
 	$content = \strip_shortcodes( $content );
-	$content = \html_entity_decode( $content );
 	$content = \wp_strip_all_tags( $content );
+	$content = \html_entity_decode( $content, ENT_QUOTES, 'UTF-8' );
 	$content = \trim( $content );
-	$content = \preg_replace( '/\R+/m', "\n\n", $content );
-	$content = \preg_replace( '/[\r\t]/', '', $content );
+	$content = \preg_replace( '/\R+/mu', "\n\n", $content );
+	$content = \preg_replace( '/[\r\t]/u', '', $content );
 
-	if ( $length && \strlen( $content ) > $length ) {
+	if ( $length && \mb_strlen( $content, 'UTF-8' ) > $length ) {
 		$content = \wordwrap( $content, $length, '</activitypub-summary>' );
 		$content = \explode( '</activitypub-summary>', $content, 2 );
 		$content = $content[0] . ' ' . $excerpt_more;
