@@ -14,6 +14,7 @@ use Activitypub\Collection\Followers;
 use Activitypub\Collection\Following;
 use Activitypub\Collection\Inbox;
 use Activitypub\Collection\Outbox;
+use Activitypub\Collection\Remote_Actors;
 
 /**
  * ActivityPub Class.
@@ -29,7 +30,8 @@ class Activitypub {
 		\add_action( 'init', array( self::class, 'theme_compat' ), 11 );
 		\add_action( 'init', array( self::class, 'register_user_meta' ), 11 );
 		\add_action( 'init', array( self::class, 'register_post_types' ), 11 );
-		\add_action( 'init', array( self::class, 'register_oembed_providers' ), 11 );
+
+		\add_action( 'rest_api_init', array( self::class, 'register_ap_actor_rest_field' ) );
 
 		\add_filter( 'template_include', array( self::class, 'render_activitypub_template' ), 99 );
 		\add_action( 'template_redirect', array( self::class, 'template_redirect' ) );
@@ -474,7 +476,7 @@ class Activitypub {
 	 */
 	public static function register_post_types() {
 		\register_post_type(
-			Actors::POST_TYPE,
+			Remote_Actors::POST_TYPE,
 			array(
 				'labels'           => array(
 					'name'          => _x( 'Followers', 'post_type plural name', 'activitypub' ),
@@ -492,7 +494,7 @@ class Activitypub {
 		);
 
 		\register_post_meta(
-			Actors::POST_TYPE,
+			Remote_Actors::POST_TYPE,
 			'_activitypub_inbox',
 			array(
 				'type'              => 'string',
@@ -502,7 +504,7 @@ class Activitypub {
 		);
 
 		\register_post_meta(
-			Actors::POST_TYPE,
+			Remote_Actors::POST_TYPE,
 			'_activitypub_errors',
 			array(
 				'type'              => 'string',
@@ -518,7 +520,7 @@ class Activitypub {
 		);
 
 		\register_post_meta(
-			Actors::POST_TYPE,
+			Remote_Actors::POST_TYPE,
 			Followers::FOLLOWER_META_KEY,
 			array(
 				'type'              => 'string',
@@ -807,6 +809,32 @@ class Activitypub {
 	}
 
 	/**
+	 * Register REST field for ap_actor posts.
+	 */
+	public static function register_ap_actor_rest_field() {
+		\register_rest_field(
+			Remote_Actors::POST_TYPE,
+			'activitypub_json',
+			array(
+				/**
+				 * Get the raw post content without WordPress content filtering.
+				 *
+				 * @param array $response Prepared response array.
+				 * @return string The raw post content.
+				 */
+				'get_callback' => function ( $response ) {
+					return \get_post_field( 'post_content', $response['id'] );
+				},
+				'schema'       => array(
+					'description' => 'Raw ActivityPub JSON data without WordPress content filtering',
+					'type'        => 'string',
+					'context'     => array( 'view', 'edit' ),
+				),
+			)
+		);
+	}
+
+	/**
 	 * Add the 'activitypub' capability to users who can publish posts.
 	 *
 	 * @param int $user_id User ID.
@@ -859,6 +887,11 @@ class Activitypub {
 			return $meta_value;
 		}
 
+		// If meta value is already explicitly set, respect the author's choice.
+		if ( null !== $meta_value ) {
+			return $meta_value;
+		}
+
 		// If the post is federated, return the default visibility.
 		if ( 'federated' === \get_post_meta( $object_id, 'activitypub_status', true ) ) {
 			return $meta_value;
@@ -871,18 +904,6 @@ class Activitypub {
 		}
 
 		return $meta_value;
-	}
-
-	/**
-	 * Register some Mastodon oEmbed providers.
-	 */
-	public static function register_oembed_providers() {
-		\wp_oembed_add_provider( '#https?://mastodon\.social/(@.+)/([0-9]+)#i', 'https://mastodon.social/api/oembed', true );
-		\wp_oembed_add_provider( '#https?://mastodon\.online/(@.+)/([0-9]+)#i', 'https://mastodon.online/api/oembed', true );
-		\wp_oembed_add_provider( '#https?://mastodon\.cloud/(@.+)/([0-9]+)#i', 'https://mastodon.cloud/api/oembed', true );
-		\wp_oembed_add_provider( '#https?://mstdn\.social/(@.+)/([0-9]+)#i', 'https://mstdn.social/api/oembed', true );
-		\wp_oembed_add_provider( '#https?://mastodon\.world/(@.+)/([0-9]+)#i', 'https://mastodon.world/api/oembed', true );
-		\wp_oembed_add_provider( '#https?://mas\.to/(@.+)/([0-9]+)#i', 'https://mas.to/api/oembed', true );
 	}
 
 	/**

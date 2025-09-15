@@ -5,7 +5,7 @@
  * @package Activitypub
  */
 
-use Activitypub\Collection\Actors;
+use Activitypub\Collection\Remote_Actors;
 
 /* @var array $args Template arguments. */
 $args = wp_parse_args( $args ?? array() );
@@ -31,7 +31,7 @@ $base_url = add_query_arg(
 // Prepare follower data for display.
 $follower_data = array();
 foreach ( $followers as $follower ) {
-	$actor = Actors::get_actor( $follower );
+	$actor = Remote_Actors::get_actor( $follower );
 	if ( is_wp_error( $actor ) ) {
 		continue;
 	}
@@ -69,7 +69,7 @@ require_once ABSPATH . 'wp-admin/admin-header.php';
 
 		<p><?php esc_html_e( 'You can unblock these accounts later from your Blocked Actors list.', 'activitypub' ); ?></p>
 
-		<?php if ( current_user_can( 'manage_options' ) ) : ?>
+		<?php if ( current_user_can( 'manage_options' ) && get_current_screen()->id !== 'settings_page_activitypub' ) : ?>
 			<p>
 				<label>
 					<input type="checkbox" name="site_wide" value="1" />
