@@ -41,8 +41,10 @@ class Blog extends Actor {
 	protected $generator = array(
 		'type'       => 'Application',
 		'implements' => array(
-			'href' => 'https://datatracker.ietf.org/doc/html/rfc9421',
-			'name' => 'RFC-9421: HTTP Message Signatures',
+			array(
+				'href' => 'https://datatracker.ietf.org/doc/html/rfc9421',
+				'name' => 'RFC-9421: HTTP Message Signatures',
+			),
 		),
 	);
 
@@ -94,7 +96,7 @@ class Blog extends Actor {
 			return \esc_url( \trailingslashit( get_home_url() ) . '@' . $this->get_preferred_username() );
 		}
 
-		return \add_query_arg( 'author', $this->_id, \trailingslashit( \home_url() ) );
+		return \add_query_arg( 'author', $this->_id, \home_url( '/' ) );
 	}
 
 	/**

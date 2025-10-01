@@ -75,6 +75,22 @@ class Post extends Base {
 	}
 
 	/**
+	 * Get the Interaction Policy.
+	 *
+	 * @see https://docs.gotosocial.org/en/latest/federation/interaction_policy/
+	 *
+	 * @return array The interaction policy.
+	 */
+	public function get_interaction_policy() {
+		return array(
+			'canAnnounce' => $this->get_public_interaction_policy(),
+			'canLike'     => $this->get_public_interaction_policy(),
+			'canQuote'    => $this->get_quote_policy(),
+			'canReply'    => $this->get_public_interaction_policy(),
+		);
+	}
+
+	/**
 	 * Returns the User-Object of the Author of the Post.
 	 *
 	 * If `single_user` mode is enabled, the Blog-User is returned.
@@ -114,7 +130,7 @@ class Post extends Base {
 
 		if ( $post_id > $last_legacy_id ) {
 			// Generate URI based on post ID.
-			return \add_query_arg( 'p', $post_id, \trailingslashit( \home_url() ) );
+			return \add_query_arg( 'p', $post_id, \home_url( '/' ) );
 		}
 
 		return $this->get_url();
@@ -949,5 +965,56 @@ class Post extends Base {
 			'type'    => 'Note',
 			'content' => $this->get_summary(),
 		);
+	}
+
+	/**
+	 * Get the quote policy.
+	 *
+	 * @return array The quote policy.
+	 */
+	private function get_quote_policy() {
+		switch ( \get_post_meta( $this->item->ID, 'activitypub_interaction_policy_quote', true ) ) {
+			case ACTIVITYPUB_INTERACTION_POLICY_FOLLOWERS:
+				return array( 'automaticApproval' => get_rest_url_by_path( sprintf( 'actors/%d/followers', $this->item->post_author ) ) );
+
+			case ACTIVITYPUB_INTERACTION_POLICY_ME:
+				return array( 'automaticApproval' => $this->get_self_interaction_policy() );
+
+			default:
+				return $this->get_public_interaction_policy();
+		}
+	}
+
+	/**
+	 * Get the public interaction policy.
+	 *
+	 * @return array The public interaction policy.
+	 */
+	private function get_public_interaction_policy() {
+		return array(
+			'automaticApproval' => 'https://www.w3.org/ns/activitystreams#Public',
+			'always'            => 'https://www.w3.org/ns/activitystreams#Public',
+		);
+	}
+
+	/**
+	 * Get the actor ID(s) for the `me` audience for use in interaction policies.
+	 *
+	 * @return string|array The actor ID(s).
+	 */
+	private function get_self_interaction_policy() {
+		switch ( \get_option( 'activitypub_actor_mode', ACTIVITYPUB_ACTOR_MODE ) ) {
+			case ACTIVITYPUB_BLOG_MODE:
+				return ( new Blog() )->get_id();
+
+			case ACTIVITYPUB_ACTOR_AND_BLOG_MODE:
+				return array(
+					$this->get_actor_object()->get_id(),
+					( new Blog() )->get_id(),
+				);
+
+			default:
+				return $this->get_actor_object()->get_id();
+		}
 	}
 }
