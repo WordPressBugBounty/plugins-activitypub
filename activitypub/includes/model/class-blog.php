@@ -93,7 +93,7 @@ class Blog extends Actor {
 		$permalink = \get_option( 'activitypub_use_permalink_as_id_for_blog', false );
 
 		if ( $permalink ) {
-			return \esc_url( \trailingslashit( get_home_url() ) . '@' . $this->get_preferred_username() );
+			return \esc_url( \home_url( '/@' . $this->get_preferred_username() ) );
 		}
 
 		return \add_query_arg( 'author', $this->_id, \home_url( '/' ) );
@@ -102,11 +102,16 @@ class Blog extends Actor {
 	/**
 	 * Get the type of the object.
 	 *
+	 * If relay mode is enabled, return "Service".
 	 * If the Blog is in "single user" mode, return "Person" instead of "Group".
 	 *
 	 * @return string The type of the object.
 	 */
 	public function get_type() {
+		if ( \get_option( 'activitypub_relay_mode', false ) ) {
+			return 'Service';
+		}
+
 		if ( is_single_user() ) {
 			return 'Person';
 		} else {
@@ -391,15 +396,9 @@ class Blog extends Actor {
 	 * @return string[]|null The endpoints.
 	 */
 	public function get_endpoints() {
-		$endpoints = null;
-
-		if ( \get_option( 'activitypub_shared_inbox' ) ) {
-			$endpoints = array(
-				'sharedInbox' => get_rest_url_by_path( 'inbox' ),
-			);
-		}
-
-		return $endpoints;
+		return array(
+			'sharedInbox' => get_rest_url_by_path( 'inbox' ),
+		);
 	}
 
 	/**

@@ -15,6 +15,15 @@ namespace Activitypub\Rest;
  */
 trait Collection {
 	/**
+	 * The JSON-LD context for ActivityPub collections.
+	 *
+	 * @var array
+	 */
+	private $json_ld_context = array(
+		'https://www.w3.org/ns/activitystreams',
+	);
+
+	/**
 	 * Prepares a collection response by adding navigation links and handling pagination.
 	 *
 	 * Adds first, last, next, and previous page links to a collection response
@@ -23,11 +32,13 @@ trait Collection {
 	 *
 	 * @param array            $response The collection response array.
 	 * @param \WP_REST_Request $request  The request object.
+	 *
 	 * @return array|\WP_Error The response array with navigation links or WP_Error on invalid page.
 	 */
 	public function prepare_collection_response( $response, $request ) {
 		$page      = $request->get_param( 'page' );
-		$max_pages = \ceil( $response['totalItems'] / $request->get_param( 'per_page' ) );
+		$per_page  = \max( 1, \absint( $request->get_param( 'per_page' ) ) );
+		$max_pages = \max( 1, \ceil( $response['totalItems'] / $per_page ) );
 
 		if ( $page > $max_pages ) {
 			return new \WP_Error(
@@ -37,8 +48,14 @@ trait Collection {
 			);
 		}
 
-		// No need to add links if there's only one page.
-		if ( 1 >= $max_pages && null === $page ) {
+		// Set the JSON-LD context if not already set.
+		if ( empty( $response['@context'] ) ) {
+			// Ensure the context is the first element in the response.
+			$response = array( '@context' => $this->json_ld_context ) + $response;
+		}
+
+		if ( empty( $response['items'] ) && empty( $response['orderedItems'] ) ) {
+			// Skip pagination metadata when items are intentionally hidden or collection is empty.
 			return $response;
 		}
 
@@ -76,6 +93,7 @@ trait Collection {
 	 * that controllers can use to compose their full schema by passing in their item schema.
 	 *
 	 * @param array $item_schema Optional. The schema for the items in the collection. Default empty array.
+	 *
 	 * @return array The collection schema.
 	 */
 	public function get_collection_schema( $item_schema = array() ) {

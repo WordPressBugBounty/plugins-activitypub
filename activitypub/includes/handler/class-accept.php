@@ -28,10 +28,10 @@ class Accept {
 	/**
 	 * Handles "Accept" requests.
 	 *
-	 * @param array $accept  The activity-object.
-	 * @param int   $user_id The id of the local blog-user.
+	 * @param array     $accept   The activity-object.
+	 * @param int|int[] $user_ids The id of the local blog-user.
 	 */
-	public static function handle_accept( $accept, $user_id ) {
+	public static function handle_accept( $accept, $user_ids ) {
 		// Validate that there is a Follow Activity.
 		$outbox_post = Outbox::get_by_guid( $accept['object']['id'] );
 
@@ -48,18 +48,19 @@ class Accept {
 			return;
 		}
 
+		$user_id = is_array( $user_ids ) ? reset( $user_ids ) : $user_ids;
 		$result  = Following::accept( $actor_post, $user_id );
 		$success = ! \is_wp_error( $result );
 
 		/**
 		 * Fires after an ActivityPub Accept activity has been handled.
 		 *
-		 * @param array              $accept  The ActivityPub activity data.
-		 * @param int                $user_id The local user ID.
-		 * @param bool               $success True on success, false otherwise.
-		 * @param \WP_Post|\WP_Error $result  The remote actor post or error.
+		 * @param array              $accept   The ActivityPub activity data.
+		 * @param int[]              $user_ids The local user IDs.
+		 * @param bool               $success  True on success, false otherwise.
+		 * @param \WP_Post|\WP_Error $result   The remote actor post or error.
 		 */
-		\do_action( 'activitypub_handled_accept', $accept, $user_id, $success, $result );
+		\do_action( 'activitypub_handled_accept', $accept, (array) $user_ids, $success, $result );
 	}
 
 	/**
@@ -72,36 +73,25 @@ class Accept {
 	 * @return bool The validation state: true if valid, false if not.
 	 */
 	public static function validate_object( $valid, $param, $request ) {
-		$json_params = $request->get_json_params();
+		$activity = $request->get_json_params();
 
-		if ( empty( $json_params['type'] ) ) {
+		if ( empty( $activity['type'] ) ) {
 			return false;
 		}
 
-		if (
-			'Accept' !== $json_params['type'] ||
-			\is_wp_error( $request )
-		) {
+		if ( 'Accept' !== $activity['type'] ) {
 			return $valid;
 		}
 
-		$required_attributes = array(
-			'actor',
-			'object',
-		);
-
-		if ( ! empty( \array_diff( $required_attributes, \array_keys( $json_params ) ) ) ) {
+		if ( ! isset( $activity['actor'], $activity['object'] ) ) {
 			return false;
 		}
 
-		$required_object_attributes = array(
-			'id',
-			'type',
-			'actor',
-			'object',
-		);
+		if ( ! \is_array( $activity['object'] ) ) {
+			return false;
+		}
 
-		if ( ! empty( \array_diff( $required_object_attributes, \array_keys( $json_params['object'] ) ) ) ) {
+		if ( ! isset( $activity['object']['id'], $activity['object']['type'], $activity['object']['actor'], $activity['object']['object'] ) ) {
 			return false;
 		}
 

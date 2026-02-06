@@ -160,34 +160,6 @@ class Blocked_Actors extends \WP_List_Table {
 	}
 
 	/**
-	 * Get columns.
-	 *
-	 * @return array
-	 */
-	public function get_columns() {
-		return array(
-			'cb'         => '<input type="checkbox" />',
-			'username'   => \__( 'Username', 'activitypub' ),
-			'post_title' => \__( 'Name', 'activitypub' ),
-			'webfinger'  => \__( 'Profile', 'activitypub' ),
-			'modified'   => \__( 'Blocked date', 'activitypub' ),
-		);
-	}
-
-	/**
-	 * Returns sortable columns.
-	 *
-	 * @return array
-	 */
-	public function get_sortable_columns() {
-		return array(
-			'username'   => array( 'username', true ),
-			'post_title' => array( 'post_title', true ),
-			'modified'   => array( 'modified', false ),
-		);
-	}
-
-	/**
 	 * Prepare items.
 	 */
 	public function prepare_items() {
@@ -208,7 +180,7 @@ class Blocked_Actors extends \WP_List_Table {
 			$args['s'] = $this->normalize_search_term( \wp_unslash( $_GET['s'] ) ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
 		}
 
-		$blocked_with_count = Blocked_Actors_Collection::get_blocked_actors_with_count( $this->user_id, $per_page, $page_num, $args );
+		$blocked_with_count = Blocked_Actors_Collection::query( $this->user_id, $per_page, $page_num, $args );
 
 		$blocked_actor_posts = $blocked_with_count['blocked_actors'];
 		$counter             = $blocked_with_count['total'];
@@ -231,10 +203,10 @@ class Blocked_Actors extends \WP_List_Table {
 			$this->items[] = array(
 				'id'         => $blocked_actor_post->ID,
 				'icon'       => object_to_uri( $actor->get_icon() ?? ACTIVITYPUB_PLUGIN_URL . 'assets/img/mp.jpg' ),
-				'post_title' => $actor->get_name() ?? $actor->get_preferred_username(),
+				'post_title' => $actor->get_name() ?: $actor->get_preferred_username(),
 				'username'   => $actor->get_preferred_username(),
-				'url'        => object_to_uri( $actor->get_url() ?? $actor->get_id() ),
-				'webfinger'  => Remote_Actors::get_acct( $blocked_actor_post->ID ),
+				'url'        => object_to_uri( $actor->get_url() ?: $actor->get_id() ),
+				'webfinger'  => $actor->get_webfinger(),
 				'identifier' => $actor->get_id(),
 				'modified'   => $blocked_actor_post->post_modified_gmt,
 			);
@@ -250,20 +222,6 @@ class Blocked_Actors extends \WP_List_Table {
 		return array(
 			'delete' => \__( 'Unblock', 'activitypub' ),
 		);
-	}
-
-	/**
-	 * Column default.
-	 *
-	 * @param array  $item        Item.
-	 * @param string $column_name Column name.
-	 * @return string
-	 */
-	public function column_default( $item, $column_name ) {
-		if ( ! \array_key_exists( $column_name, $item ) ) {
-			return \esc_html__( 'None', 'activitypub' );
-		}
-		return \esc_html( $item[ $column_name ] );
 	}
 
 	/**

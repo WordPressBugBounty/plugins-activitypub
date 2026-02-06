@@ -3,7 +3,7 @@
  * Plugin Name: ActivityPub
  * Plugin URI: https://github.com/Automattic/wordpress-activitypub
  * Description: The ActivityPub protocol is a decentralized social networking protocol based upon the ActivityStreams 2.0 data format.
- * Version: 7.5.0
+ * Version: 7.9.0
  * Author: Matthias Pfefferle & Automattic
  * Author URI: https://automattic.com/
  * License: MIT
@@ -17,7 +17,7 @@
 
 namespace Activitypub;
 
-\define( 'ACTIVITYPUB_PLUGIN_VERSION', '7.5.0' );
+\define( 'ACTIVITYPUB_PLUGIN_VERSION', '7.9.0' );
 
 // Plugin related constants.
 \define( 'ACTIVITYPUB_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
@@ -27,8 +27,15 @@ namespace Activitypub;
 
 require_once __DIR__ . '/includes/class-autoloader.php';
 require_once __DIR__ . '/includes/compat.php';
-require_once __DIR__ . '/includes/functions.php';
 require_once __DIR__ . '/includes/constants.php';
+require_once __DIR__ . '/includes/functions.php';
+require_once __DIR__ . '/includes/functions-activity.php';
+require_once __DIR__ . '/includes/functions-comment.php';
+require_once __DIR__ . '/includes/functions-federation.php';
+require_once __DIR__ . '/includes/functions-post.php';
+require_once __DIR__ . '/includes/functions-request.php';
+require_once __DIR__ . '/includes/functions-url.php';
+require_once __DIR__ . '/includes/functions-user.php';
 require_once __DIR__ . '/integration/load.php';
 
 Autoloader::register_path( __NAMESPACE__, __DIR__ . '/includes' );
@@ -44,6 +51,7 @@ function rest_init() {
 	Rest\Server::init();
 	( new Rest\Actors_Controller() )->register_routes();
 	( new Rest\Actors_Inbox_Controller() )->register_routes();
+	( new Rest\Admin\Actions_Controller() )->register_routes();
 	( new Rest\Application_Controller() )->register_routes();
 	( new Rest\Collections_Controller() )->register_routes();
 	( new Rest\Comments_Controller() )->register_routes();
@@ -69,6 +77,8 @@ function rest_init() {
  */
 function plugin_init() {
 	\add_action( 'init', array( __NAMESPACE__ . '\Activitypub', 'init' ) );
+	\add_action( 'init', array( __NAMESPACE__ . '\Attachments', 'init' ) );
+	\add_action( 'init', array( __NAMESPACE__ . '\Avatars', 'init' ) );
 	\add_action( 'init', array( __NAMESPACE__ . '\Comment', 'init' ) );
 	\add_action( 'init', array( __NAMESPACE__ . '\Dispatcher', 'init' ) );
 	\add_action( 'init', array( __NAMESPACE__ . '\Embed', 'init' ) );
@@ -82,12 +92,18 @@ function plugin_init() {
 	\add_action( 'init', array( __NAMESPACE__ . '\Options', 'init' ) );
 	\add_action( 'init', array( __NAMESPACE__ . '\Post_Types', 'init' ) );
 	\add_action( 'init', array( __NAMESPACE__ . '\Router', 'init' ) );
-	\add_action( 'init', array( __NAMESPACE__ . '\Scheduler', 'init' ) );
+	// Priority 0 ensures Scheduler hooks are registered before Migration (priority 1) runs.
+	\add_action( 'init', array( __NAMESPACE__ . '\Scheduler', 'init' ), 0 );
 	\add_action( 'init', array( __NAMESPACE__ . '\Search', 'init' ) );
 	\add_action( 'init', array( __NAMESPACE__ . '\Signature', 'init' ) );
 
 	if ( site_supports_blocks() ) {
 		\add_action( 'init', array( __NAMESPACE__ . '\Blocks', 'init' ) );
+	}
+
+	// Only load relay if relay mode is enabled.
+	if ( \get_option( 'activitypub_relay_mode', false ) ) {
+		\add_action( 'init', array( __NAMESPACE__ . '\Relay', 'init' ) );
 	}
 
 	// Load development tools.
@@ -115,10 +131,11 @@ function plugin_admin_init() {
 	// Screen Options and Menus are set before `admin_init`.
 	\add_action( 'init', array( __NAMESPACE__ . '\WP_Admin\Heartbeat', 'init' ), 9 ); // Before script loader.
 	\add_filter( 'init', array( __NAMESPACE__ . '\WP_Admin\Screen_Options', 'init' ) );
-	\add_action( 'admin_menu', array( __NAMESPACE__ . '\WP_Admin\Menu', 'admin_menu' ) );
+	\add_action( 'init', array( __NAMESPACE__ . '\WP_Admin\Menu', 'init' ) );
 
 	\add_action( 'admin_init', array( __NAMESPACE__ . '\WP_Admin\Admin', 'init' ) );
 	\add_action( 'admin_init', array( __NAMESPACE__ . '\WP_Admin\Advanced_Settings_Fields', 'init' ) );
+	\add_action( 'admin_init', array( __NAMESPACE__ . '\WP_Admin\App', 'init' ), 0 ); // Before admin bar init.
 	\add_action( 'admin_init', array( __NAMESPACE__ . '\WP_Admin\Blog_Settings_Fields', 'init' ) );
 	\add_action( 'admin_init', array( __NAMESPACE__ . '\WP_Admin\Health_Check', 'init' ) );
 	\add_action( 'admin_init', array( __NAMESPACE__ . '\WP_Admin\Settings', 'init' ) );

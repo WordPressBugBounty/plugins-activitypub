@@ -7,6 +7,8 @@
 
 namespace Activitypub\Integration;
 
+use Activitypub\Webfinger;
+
 use function Activitypub\get_active_users;
 use function Activitypub\get_rest_url_by_path;
 use function Activitypub\get_total_users;
@@ -36,18 +38,51 @@ class Nodeinfo {
 	 * @return array The extended array.
 	 */
 	public static function add_nodeinfo_data( $nodeinfo, $version ) {
-		if ( $version >= '2.0' ) {
-			$nodeinfo['protocols'][] = 'activitypub';
-		} else {
-			$nodeinfo['protocols']['inbound'][]  = 'activitypub';
-			$nodeinfo['protocols']['outbound'][] = 'activitypub';
+		$nodeinfo = wp_parse_args(
+			$nodeinfo,
+			array(
+				'version'   => $version,
+				'software'  => array(),
+				'usage'     => array(
+					'users' => array(
+						'total'          => 0,
+						'activeMonth'    => 0,
+						'activeHalfyear' => 0,
+					),
+				),
+				'protocols' => array(),
+				'services'  => array(
+					'inbound'  => array(),
+					'outbound' => array(),
+				),
+				'metadata'  => array(),
+			)
+		);
+
+		if ( \version_compare( $version, '2.1', '>=' ) ) {
+			$nodeinfo['software']['homepage']   = 'https://wordpress.org/plugins/activitypub/';
+			$nodeinfo['software']['repository'] = 'https://github.com/Automattic/wordpress-activitypub';
 		}
+
+		$nodeinfo['protocols'][] = 'activitypub';
+
+		$nodeinfo['services']['inbound']  = array_merge(
+			$nodeinfo['services']['inbound'],
+			array( 'gnusocial' )
+		);
+		$nodeinfo['services']['outbound'] = array_merge(
+			$nodeinfo['services']['outbound'],
+			array( 'friendica', 'gnusocial', 'mediagoblin', 'wordpress' )
+		);
 
 		$nodeinfo['usage']['users'] = array(
 			'total'          => get_total_users(),
 			'activeMonth'    => get_active_users(),
 			'activeHalfyear' => get_active_users( 6 ),
 		);
+
+		$nodeinfo['metadata']['federation']    = array( 'enabled' => true );
+		$nodeinfo['metadata']['staffAccounts'] = self::get_staff();
 
 		return $nodeinfo;
 	}
@@ -85,5 +120,26 @@ class Nodeinfo {
 		);
 
 		return $data;
+	}
+
+	/**
+	 * Get all staff accounts (admin users with the "activitypub" capability) and return them in WebFinger resource format.
+	 *
+	 * @return array List of staff accounts in WebFinger resource format.
+	 */
+	private static function get_staff() {
+		// Get all admin users with the cap activitypub.
+		$admins = get_users(
+			array(
+				'role'    => 'administrator',
+				'orderby' => 'ID',
+				'order'   => 'ASC',
+				'cap'     => 'activitypub',
+				'fields'  => 'ID',
+			)
+		);
+		$admins = array_map( array( Webfinger::class, 'get_user_resource' ), $admins );
+
+		return array_values( array_filter( $admins ) );
 	}
 }

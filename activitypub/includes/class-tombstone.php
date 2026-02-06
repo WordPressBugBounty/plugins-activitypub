@@ -88,17 +88,20 @@ class Tombstone {
 		 */
 		\do_action( 'activitypub_pre_http_is_tombstone', $url );
 
-		$response = \wp_safe_remote_get( $url, array( 'headers' => array( 'Accept' => 'application/activity+json' ) ) );
-		$code     = \wp_remote_retrieve_response_code( $response );
+		$response = Http::get( $url );
 
-		if ( in_array( (int) $code, self::$codes, true ) ) {
+		if ( ! \is_wp_error( $response ) ) {
+			$data = \wp_remote_retrieve_body( $response );
+			$data = \json_decode( $data, true );
+
+			return self::check_array( $data );
+		}
+
+		if ( in_array( (int) $response->get_error_code(), self::$codes, true ) ) {
 			return true;
 		}
 
-		$data = \wp_remote_retrieve_body( $response );
-		$data = \json_decode( $data, true );
-
-		return self::check_array( $data );
+		return false;
 	}
 
 	/**
@@ -190,36 +193,58 @@ class Tombstone {
 	}
 
 	/**
-	 * Add a URL to the local tombstone registry.
+	 * Add one or more URLs to the local tombstone registry.
 	 *
-	 * "Buries" a URL by adding it to the local tombstone URL registry.
-	 * The URL is normalized before storage and duplicates are automatically removed.
-	 * This marks the URL as tombstoned for future local checks.
+	 * "Buries" URLs by adding them to the local tombstone URL registry.
+	 * URLs are normalized before storage and duplicates are automatically removed.
+	 * This marks the URLs as tombstoned for future local checks.
 	 *
-	 * @param string $url The URL to add to the tombstone registry.
-	 *
-	 * @return void
+	 * @param string ...$urls The URLs to add to the tombstone registry.
 	 */
-	public static function bury( $url ) {
-		$urls   = \get_option( 'activitypub_tombstone_urls', array() );
-		$urls[] = normalize_url( $url );
-		$urls   = \array_unique( $urls );
+	public static function bury( ...$urls ) {
+		$to_add = array();
 
-		\update_option( 'activitypub_tombstone_urls', $urls );
+		foreach ( $urls as $url ) {
+			if ( \filter_var( $url, \FILTER_VALIDATE_URL ) ) {
+				$to_add[] = normalize_url( $url );
+			}
+		}
+
+		if ( empty( $to_add ) ) {
+			return;
+		}
+
+		$stored_urls = \get_option( 'activitypub_tombstone_urls', array() );
+		$stored_urls = \array_merge( $stored_urls, $to_add );
+		$stored_urls = \array_unique( $stored_urls );
+
+		\update_option( 'activitypub_tombstone_urls', $stored_urls );
 	}
 
 	/**
-	 * Remove a URL from the local tombstone registry.
+	 * Remove one or more URLs from the local tombstone registry.
 	 *
-	 * Removes a URL from the local tombstone URL registry.
-	 * The URL is normalized before comparison to ensure consistent matching.
-	 * This marks the URL as no longer tombstoned for future local checks.
+	 * Removes URLs from the local tombstone URL registry.
+	 * URLs are normalized before comparison to ensure consistent matching.
+	 * This marks the URLs as no longer tombstoned for future local checks.
 	 *
-	 * @param string $url The URL to remove from the tombstone registry.
+	 * @param string ...$urls The URLs to remove from the tombstone registry.
 	 */
-	public static function remove( $url ) {
-		$urls = \get_option( 'activitypub_tombstone_urls', array() );
-		$urls = \array_diff( $urls, array( normalize_url( $url ) ) );
-		\update_option( 'activitypub_tombstone_urls', $urls );
+	public static function remove( ...$urls ) {
+		$to_remove = array();
+
+		foreach ( $urls as $url ) {
+			if ( \filter_var( $url, \FILTER_VALIDATE_URL ) ) {
+				$to_remove[] = normalize_url( $url );
+			}
+		}
+
+		if ( empty( $to_remove ) ) {
+			return;
+		}
+
+		$stored_urls = \get_option( 'activitypub_tombstone_urls', array() );
+		$stored_urls = \array_diff( $stored_urls, $to_remove );
+		\update_option( 'activitypub_tombstone_urls', $stored_urls );
 	}
 }

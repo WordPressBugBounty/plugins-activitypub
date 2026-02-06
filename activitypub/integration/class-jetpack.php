@@ -9,8 +9,10 @@ namespace Activitypub\Integration;
 
 use Activitypub\Collection\Followers;
 use Activitypub\Collection\Following;
-use Activitypub\Comment;
+use Activitypub\Http;
 use Automattic\Jetpack\Connection\Manager;
+
+use function Activitypub\is_activity_object;
 
 /**
  * Jetpack integration class.
@@ -36,6 +38,8 @@ class Jetpack {
 			\add_filter( 'activitypub_following_row_actions', array( self::class, 'add_reader_link' ), 10, 2 );
 			\add_filter( 'pre_option_activitypub_following_ui', array( self::class, 'pre_option_activitypub_following_ui' ) );
 		}
+
+		\add_action( 'load-post-new.php', array( self::class, 'adapt_post_share' ) );
 	}
 
 	/**
@@ -69,15 +73,15 @@ class Jetpack {
 	 * Add custom comment types to the list of comment types.
 	 *
 	 * @param array $comment_types Default comment types.
-	 * @return array
+	 *
+	 * @return array The comment types with ActivityPub types added.
 	 */
 	public static function add_comment_types( $comment_types ) {
-		// jetpack_sync_whitelisted_comment_types runs on plugins_loaded, before comment types are registered.
-		if ( 'jetpack_sync_whitelisted_comment_types' === current_filter() ) {
-			Comment::register_comment_types();
-		}
+		$comment_types[] = 'like';
+		$comment_types[] = 'quote';
+		$comment_types[] = 'repost';
 
-		return array_unique( \array_merge( $comment_types, Comment::get_comment_type_slugs() ) );
+		return array_unique( $comment_types );
 	}
 
 	/**
@@ -101,7 +105,7 @@ class Jetpack {
 			if ( empty( $feed['feed_id'] ) ) {
 				return $actions; // No feed_id available on WPCOM.
 			}
-			$url = sprintf( 'https://wordpress.com/reader/feed/%d', (int) $feed['feed_id'] );
+			$url = sprintf( 'https://wordpress.com/reader/feeds/%d', (int) $feed['feed_id'] );
 		} else {
 			$url = sprintf( 'https://wordpress.com/reader/feeds/lookup/%s', rawurlencode( $item['identifier'] ) );
 		}
@@ -127,5 +131,26 @@ class Jetpack {
 	 */
 	public static function pre_option_activitypub_following_ui() {
 		return '1';
+	}
+
+	/**
+	 * Adapt the parameters for a post share request to be compatible with the Federated Reply block.
+	 */
+	public static function adapt_post_share() {
+		if ( ! isset( $_GET['is_post_share'], $_GET['url'] ) || ! $_GET['is_post_share'] ) { // phpcs:ignore WordPress.Security
+			return;
+		}
+
+		$url = \sanitize_url( \wp_unslash( $_GET['url'] ) ); // phpcs:ignore WordPress.Security.NonceVerification
+
+		if ( is_activity_object( Http::get_remote_object( $url ) ) ) {
+			$args = array(
+				'post_type'   => 'post',
+				'in_reply_to' => $url,
+			);
+
+			\wp_safe_redirect( \add_query_arg( $args, \admin_url( 'post-new.php' ) ) );
+			exit;
+		}
 	}
 }

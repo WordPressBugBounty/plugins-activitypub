@@ -7,6 +7,7 @@
 
 namespace Activitypub\Transformer;
 
+use Activitypub\Activity\Base_Object;
 use Activitypub\Blocks;
 use Activitypub\Collection\Actors;
 use Activitypub\Collection\Interactions;
@@ -42,6 +43,48 @@ class Post extends Base {
 	private $actor_object = null;
 
 	/**
+	 * The content.
+	 *
+	 * @var string|false False indicates not yet computed.
+	 */
+	private $content = false;
+
+	/**
+	 * The summary.
+	 *
+	 * @var string|null|false False indicates not yet computed.
+	 */
+	private $summary = false;
+
+	/**
+	 * The tags.
+	 *
+	 * @var array|false False indicates not yet computed.
+	 */
+	private $tags = false;
+
+	/**
+	 * The attachment.
+	 *
+	 * @var array|false False indicates not yet computed.
+	 */
+	private $attachment = false;
+
+	/**
+	 * The mentions.
+	 *
+	 * @var array|false False indicates not yet computed.
+	 */
+	private $mentions = false;
+
+	/**
+	 * The in_reply_to.
+	 *
+	 * @var string|array|null|false False indicates not yet computed.
+	 */
+	private $in_reply_to = false;
+
+	/**
 	 * Transforms the WP_Post object to an ActivityPub Object
 	 *
 	 * @return \Activitypub\Activity\Base_Object The ActivityPub Object
@@ -56,6 +99,27 @@ class Post extends Base {
 			$object->set_summary( $content_warning );
 			$object->set_summary_map( null );
 			$object->set_dcterms( array( 'subject' => $content_warning ) );
+		}
+
+		return $object;
+	}
+
+	/**
+	 * Returns a Tombstone object for the post.
+	 *
+	 * @return Base_Object The Tombstone object.
+	 */
+	public function to_tombstone() {
+		$object = new Base_Object();
+		$object->set_type( 'Tombstone' );
+		$object->set_id( $this->get_id() );
+		$object->set_former_type( $this->get_type() );
+		$object->set_published( $this->get_published() );
+		$object->set_updated( $this->get_updated() );
+
+		$deleted_at = \get_post_meta( $this->item->ID, 'activitypub_deleted_at', true );
+		if ( $deleted_at ) {
+			$object->set_deleted( \gmdate( ACTIVITYPUB_DATE_TIME_RFC3339, $deleted_at ) );
 		}
 
 		return $object;
@@ -290,12 +354,18 @@ class Post extends Base {
 	 * @return array The Attachments.
 	 */
 	protected function get_attachment() {
+		if ( false !== $this->attachment ) {
+			return $this->attachment;
+		}
+
 		/*
 		 * Remove attachments from the Fediverse if a post was federated and then set back to draft.
 		 * Except in preview mode, where we want to show attachments.
 		 */
 		if ( ! $this->is_preview() && 'draft' === \get_post_status( $this->item ) ) {
-			return array();
+			$this->attachment = array();
+
+			return $this->attachment;
 		}
 
 		$max_media = \get_post_meta( $this->item->ID, 'activitypub_max_image_attachments', true );
@@ -316,7 +386,9 @@ class Post extends Base {
 		$max_media = (int) \apply_filters( 'activitypub_max_image_attachments', $max_media );
 
 		if ( 0 === $max_media ) {
-			return array();
+			$this->attachment = array();
+
+			return $this->attachment;
 		}
 
 		$media = array(
@@ -340,8 +412,6 @@ class Post extends Base {
 		}
 
 		$media = $this->filter_media_by_object_type( $media, \get_post_format( $this->item ), $this->item );
-		$media = $this->filter_unique_attachments( $media );
-		$media = \array_slice( $media, 0, $max_media );
 
 		/**
 		 * Filter the attachment IDs for a post.
@@ -353,6 +423,10 @@ class Post extends Base {
 		 */
 		$media = \apply_filters( 'activitypub_attachment_ids', $media, $this->item );
 
+		// Deduplicate and limit after filter to ensure plugins adding attachments don't cause duplicates.
+		$media = $this->filter_unique_attachments( $media );
+		$media = \array_slice( $media, 0, $max_media );
+
 		$attachments = \array_filter( \array_map( array( $this, 'transform_attachment' ), $media ) );
 
 		/**
@@ -363,7 +437,9 @@ class Post extends Base {
 		 *
 		 * @return array The filtered attachments.
 		 */
-		return \apply_filters( 'activitypub_attachments', $attachments, $this->item );
+		$this->attachment = \apply_filters( 'activitypub_attachments', $attachments, $this->item );
+
+		return $this->attachment;
 	}
 
 	/**
@@ -381,15 +457,8 @@ class Post extends Base {
 			return \ucfirst( $post_format_setting );
 		}
 
-		$has_title = \post_type_supports( $this->item->post_type, 'title' );
-		$content   = \wp_strip_all_tags( $this->item->post_content );
-
 		// Check if the post has a title.
-		if (
-			! $has_title ||
-			! $this->item->post_title ||
-			\strlen( $content ) <= ACTIVITYPUB_NOTE_LENGTH
-		) {
+		if ( ! \post_type_supports( $this->item->post_type, 'title' ) || ! $this->item->post_title ) {
 			return 'Note';
 		}
 
@@ -430,6 +499,10 @@ class Post extends Base {
 	 * @return array The list of Tags.
 	 */
 	protected function get_tag() {
+		if ( false !== $this->tags ) {
+			return $this->tags;
+		}
+
 		$tags = parent::get_tag();
 
 		$post_tags = \get_the_tags( $this->item->ID );
@@ -448,7 +521,9 @@ class Post extends Base {
 			}
 		}
 
-		return \array_unique( $tags, SORT_REGULAR );
+		$this->tags = \array_unique( $tags, SORT_REGULAR );
+
+		return $this->tags;
 	}
 
 	/**
@@ -464,12 +539,20 @@ class Post extends Base {
 			return null;
 		}
 
-		// Remove Teaser from drafts.
-		if ( ! $this->is_preview() && 'draft' === \get_post_status( $this->item ) ) {
-			return \__( '(This post is being modified)', 'activitypub' );
+		if ( false !== $this->summary ) {
+			return $this->summary;
 		}
 
-		return generate_post_summary( $this->item );
+		// Remove Teaser from drafts.
+		if ( ! $this->is_preview() && 'draft' === \get_post_status( $this->item ) ) {
+			$this->summary = \__( '(This post is being modified)', 'activitypub' );
+
+			return $this->summary;
+		}
+
+		$this->summary = generate_post_summary( $this->item );
+
+		return $this->summary;
 	}
 
 	/**
@@ -506,9 +589,15 @@ class Post extends Base {
 	 * @return string The content.
 	 */
 	protected function get_content() {
+		if ( false !== $this->content ) {
+			return $this->content;
+		}
+
 		// Remove Content from drafts.
 		if ( ! $this->is_preview() && 'draft' === \get_post_status( $this->item ) ) {
-			return \__( '(This post is being modified)', 'activitypub' );
+			$this->content = \__( '(This post is being modified)', 'activitypub' );
+
+			return $this->content;
 		}
 
 		global $post;
@@ -538,10 +627,6 @@ class Post extends Base {
 		$content = \do_shortcode( $content );
 		\wp_reset_postdata();
 
-		$content = \wpautop( $content );
-		$content = \preg_replace( '/[\n\r\t]/', '', $content );
-		$content = \trim( $content );
-
 		// Don't need these anymore, should never appear in a post.
 		Shortcodes::unregister();
 
@@ -551,7 +636,9 @@ class Post extends Base {
 		 * @param string   $content The transformed post content.
 		 * @param \WP_Post $post    The post object being transformed.
 		 */
-		return \apply_filters( 'activitypub_the_content', $content, $post );
+		$this->content = \apply_filters( 'activitypub_the_content', $content, $post );
+
+		return $this->content;
 	}
 
 	/**
@@ -578,8 +665,13 @@ class Post extends Base {
 	 * @return string|array|null The in-reply-to URL of the post.
 	 */
 	protected function get_in_reply_to() {
+		if ( false !== $this->in_reply_to ) {
+			return $this->in_reply_to;
+		}
+
 		if ( ! site_supports_blocks() ) {
-			return null;
+			$this->in_reply_to = null;
+			return $this->in_reply_to;
 		}
 
 		$reply_urls = array();
@@ -587,20 +679,29 @@ class Post extends Base {
 
 		foreach ( $blocks as $block ) {
 			if ( 'activitypub/reply' === $block['blockName'] && isset( $block['attrs']['url'] ) ) {
-				// We only support one reply block per post for now.
-				$reply_urls[] = $block['attrs']['url'];
+
+				// Check if the URL has been validated as ActivityPub. Default to true for backwards compatibility.
+				if ( $block['attrs']['isValidActivityPub'] ?? true ) {
+					$reply_urls[] = $block['attrs']['url'];
+				}
 			}
 		}
 
 		if ( empty( $reply_urls ) ) {
-			return null;
+			$this->in_reply_to = null;
+
+			return $this->in_reply_to;
 		}
 
 		if ( 1 === count( $reply_urls ) ) {
-			return \current( $reply_urls );
+			$this->in_reply_to = \current( $reply_urls );
+
+			return $this->in_reply_to;
 		}
 
-		return \array_values( \array_unique( $reply_urls ) );
+		$this->in_reply_to = \array_values( \array_unique( $reply_urls ) );
+
+		return $this->in_reply_to;
 	}
 
 	/**
@@ -631,11 +732,66 @@ class Post extends Base {
 	}
 
 	/**
+	 * Returns the location of the post as a Place object.
+	 *
+	 * Uses WordPress Geodata post meta fields to build the location.
+	 *
+	 * @see https://codex.wordpress.org/Geodata
+	 * @see https://www.w3.org/TR/activitystreams-vocabulary/#dfn-location
+	 *
+	 * @return array|null The Place object or null if no public geodata is available.
+	 */
+	protected function get_location() {
+		$post_id = $this->item->ID;
+		$meta    = \get_post_meta( $post_id );
+
+		// If geo_public exists and is explicitly set to 0, don't share location.
+		if ( isset( $meta['geo_public'] ) && '0' === $meta['geo_public'][0] ) {
+			return null;
+		}
+
+		// Both latitude and longitude are required for a valid location.
+		// Use is_numeric() instead of empty() since 0 is a valid coordinate (Equator/Prime Meridian).
+		$has_latitude  = isset( $meta['geo_latitude'][0] ) && is_numeric( $meta['geo_latitude'][0] );
+		$has_longitude = isset( $meta['geo_longitude'][0] ) && is_numeric( $meta['geo_longitude'][0] );
+
+		if ( ! $has_latitude || ! $has_longitude ) {
+			return null;
+		}
+
+		$place = array(
+			'type'      => 'Place',
+			'latitude'  => (float) $meta['geo_latitude'][0],
+			'longitude' => (float) $meta['geo_longitude'][0],
+		);
+
+		// Add the address/name if available.
+		if ( ! empty( $meta['geo_address'][0] ) ) {
+			$place['name'] = \sanitize_text_field( $meta['geo_address'][0] );
+		}
+
+		/**
+		 * Filter the location Place object for a post.
+		 *
+		 * @param array    $place   The Place object.
+		 * @param \WP_Post $post    The post object.
+		 * @param int      $post_id The post ID.
+		 *
+		 * @return array|null The filtered Place object or null to disable location.
+		 */
+		return \apply_filters( 'activitypub_post_location', $place, $this->item, $post_id );
+	}
+
+	/**
 	 * Helper function to extract the @-Mentions from the post content.
 	 *
 	 * @return array The list of @-Mentions.
 	 */
 	protected function get_mentions() {
+		if ( false !== $this->mentions ) {
+			return $this->mentions;
+		}
+
 		/**
 		 * Filter the mentions in the post content.
 		 *
@@ -645,12 +801,14 @@ class Post extends Base {
 		 *
 		 * @return array The filtered mentions.
 		 */
-		return apply_filters(
+		$this->mentions = apply_filters(
 			'activitypub_extract_mentions',
 			array(),
 			$this->item->post_content . ' ' . $this->item->post_excerpt,
 			$this->item
 		);
+
+		return $this->mentions;
 	}
 
 	/**
@@ -806,7 +964,7 @@ class Post extends Base {
 						$media['image'] = array_merge(
 							$media['image'],
 							array_map(
-								function ( $id ) {
+								static function ( $id ) {
 									return array( 'id' => $id );
 								},
 								$block['attrs']['ids']
@@ -888,15 +1046,24 @@ class Post extends Base {
 	 */
 	protected function get_post_content_template() {
 		$content  = \get_option( 'activitypub_custom_post_content', ACTIVITYPUB_CUSTOM_POST_CONTENT );
-		$template = $content ?? ACTIVITYPUB_CUSTOM_POST_CONTENT;
+		$template = $content ?: ACTIVITYPUB_CUSTOM_POST_CONTENT;
 
 		$post_format_setting = \get_option( 'activitypub_object_type', ACTIVITYPUB_DEFAULT_OBJECT_TYPE );
+		$type                = $this->get_type();
 
 		if ( 'wordpress-post-format' === $post_format_setting ) {
 			$template = '';
 
-			if ( 'Note' === $this->get_type() ) {
-				$template .= "[ap_title type=\"html\"]\n\n";
+			/*
+			 * If the post is a note, not a reply, and does not have mentions
+			 * force the inclusion of the post title.
+			 */
+			if (
+				'Note' === $type
+				&& empty( $this->get_in_reply_to() )
+				&& empty( $this->get_mentions() )
+			) {
+				$template .= '[ap_title type="html"]';
 			}
 
 			$template .= '[ap_content]';
@@ -910,10 +1077,13 @@ class Post extends Base {
 		 * shortcodes like [ap_title] and [ap_content] that are processed during content
 		 * generation.
 		 *
+		 * @since 7.6.0 Added the $type parameter.
+		 *
 		 * @param string   $template  The template string containing shortcodes.
 		 * @param \WP_Post $item The WordPress post object being transformed.
+		 * @param string   $type ActivityStreams 2.0 Object-Type for the post.
 		 */
-		return apply_filters( 'activitypub_object_content_template', $template, $this->item );
+		return apply_filters( 'activitypub_object_content_template', $template, $this->item, $type );
 	}
 
 	/**
@@ -973,7 +1143,14 @@ class Post extends Base {
 	 * @return array The quote policy.
 	 */
 	private function get_quote_policy() {
-		switch ( \get_post_meta( $this->item->ID, 'activitypub_interaction_policy_quote', true ) ) {
+		$policy = \get_post_meta( $this->item->ID, 'activitypub_interaction_policy_quote', true );
+
+		// Fall back to global default if not set.
+		if ( ! $policy ) {
+			$policy = \get_option( 'activitypub_default_quote_policy', ACTIVITYPUB_INTERACTION_POLICY_ANYONE );
+		}
+
+		switch ( $policy ) {
 			case ACTIVITYPUB_INTERACTION_POLICY_FOLLOWERS:
 				return array( 'automaticApproval' => get_rest_url_by_path( sprintf( 'actors/%d/followers', $this->item->post_author ) ) );
 

@@ -18,6 +18,21 @@ use Activitypub\Activity\Extended_Object\Place;
  *
  * @see https://www.w3.org/TR/activitystreams-core/#activities
  * @see https://www.w3.org/TR/activitystreams-core/#intransitiveactivities
+ *
+ * @method string|array                  get_actor()      Gets one or more entities that performed or are expected to perform the activity.
+ * @method string|array|null             get_instrument() Gets one or more objects used in the completion of an Activity.
+ * @method Base_Object|string|array|null get_object()     Gets the direct object of the activity.
+ * @method string|string[]|null          get_origin()     Gets the origin property of the activity.
+ * @method array|null                    get_replies()    Gets the collection of responses to this activity.
+ * @method string|null                   get_result()     Gets the result property of the activity.
+ * @method string|string[]|null          get_target()     Gets the target property of the activity.
+ *
+ * @method Activity set_actor( string|array $actor )           Sets one or more entities that performed the activity.
+ * @method Activity set_instrument( string|array $instrument ) Sets one or more objects used in the completion of an Activity.
+ * @method Activity set_origin( string|array|null $origin )    Sets the origin property of the activity.
+ * @method Activity set_replies( array $replies )              Sets the collection of responses to this activity.
+ * @method Activity set_result( string|null $result )          Sets the result property of the activity.
+ * @method Activity set_target( string|array|null $target )    Sets the target property of the activity.
  */
 class Activity extends Base_Object {
 	const JSON_LD_CONTEXT = array(
@@ -191,14 +206,14 @@ class Activity extends Base_Object {
 	public function pre_fill_activity_from_object() {
 		$object = $this->get_object();
 
-		// Check if `$data` is a URL and use it to generate an ID then.
+		// Check if `$object` is a URL and use it to generate an ID then.
 		if ( is_string( $object ) && filter_var( $object, FILTER_VALIDATE_URL ) && ! $this->get_id() ) {
 			$this->set( 'id', $object . '#activity-' . strtolower( $this->get_type() ) . '-' . time() );
 
 			return;
 		}
 
-		// Check if `$data` is an object and copy some properties otherwise do nothing.
+		// Check if `$object` is an object and copy some properties otherwise do nothing.
 		if ( ! is_object( $object ) ) {
 			return;
 		}

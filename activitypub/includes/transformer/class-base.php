@@ -222,6 +222,19 @@ abstract class Base {
 	}
 
 	/**
+	 * Returns a Tombstone object for the item.
+	 *
+	 * @return Base_Object The Tombstone object.
+	 */
+	public function to_tombstone() {
+		$object = new Base_Object();
+		$object->set_type( 'Tombstone' );
+		$object->set_id( $this->to_id() );
+
+		return $object;
+	}
+
+	/**
 	 * Transforms the ActivityPub Object to an Activity
 	 *
 	 * @param string $type The Activity-Type.
@@ -603,7 +616,7 @@ abstract class Base {
 
 		return \array_filter(
 			$attachments,
-			function ( $attachment ) use ( &$seen_ids ) {
+			static function ( $attachment ) use ( &$seen_ids ) {
 				if ( isset( $attachment['id'] ) && ! in_array( $attachment['id'], $seen_ids, true ) ) {
 					$seen_ids[] = $attachment['id'];
 					return true;
