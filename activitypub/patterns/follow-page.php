@@ -20,12 +20,12 @@ $selected_user = ! \Activitypub\is_user_type_disabled( 'blog' ) ? 'blog' : 'inhe
 		),
 		'description'   => _x( 'Follow page layout with profile and followers list.', 'Block pattern description', 'activitypub' ),
 		'viewportWidth' => 1200,
-		'postTypes'     => array( 'post', 'page' ),
+		'postTypes'     => array( 'page' ),
 		'blockTypes'    => array( 'core/post-content' ),
 		'content'       => '<!-- wp:group {"layout":{"type":"constrained"}} -->
 <div class="wp-block-group">
 	<!-- wp:paragraph -->
-	<p>' . esc_html_x( 'Follow this blog on Mastodon or the Fediverse to receive updates directly in your feed.', 'Block pattern content', 'activitypub' ) . '</p>
+	<p>' . esc_html_x( 'Follow this blog on Mastodon or the Fediverse and get new posts delivered straight to your feed.', 'Block pattern content', 'activitypub' ) . '</p>
 	<!-- /wp:paragraph -->
 	<!-- wp:spacer {"height":"32px"} -->
 	<div style="height:32px" aria-hidden="true" class="wp-block-spacer"></div>
@@ -35,9 +35,9 @@ $selected_user = ! \Activitypub\is_user_type_disabled( 'blog' ) ? 'blog' : 'inhe
 	<div style="height:32px" aria-hidden="true" class="wp-block-spacer"></div>
 	<!-- /wp:spacer -->
 	<!-- wp:activitypub/followers {"selectedUser":"' . $selected_user . '"} -->
-	<!-- wp:heading {"level":2} -->
-	<h2 class="wp-block-heading">' . esc_html_x( 'Our Fediverse Followers', 'Block pattern content', 'activitypub' ) . '</h2>
-	<!-- /wp:heading -->
+	<div class="wp-block-activitypub-followers"><!-- wp:heading {"level":3} -->
+	<h3 class="wp-block-heading">' . esc_html_x( 'Our Fediverse Followers', 'Block pattern content', 'activitypub' ) . '</h3>
+	<!-- /wp:heading --></div>
 	<!-- /wp:activitypub/followers -->
 </div>
 <!-- /wp:group -->',

@@ -8,7 +8,6 @@
 namespace Activitypub\Rest;
 
 use Activitypub\Activity\Base_Object;
-use Activitypub\Collection\Actors;
 use Activitypub\Collection\Followers;
 use Activitypub\Collection\Remote_Actors;
 
@@ -44,7 +43,7 @@ class Followers_Controller extends Actors_Controller {
 				array(
 					'methods'             => \WP_REST_Server::READABLE,
 					'callback'            => array( $this, 'get_items' ),
-					'permission_callback' => array( 'Activitypub\Rest\Server', 'verify_signature' ),
+					'permission_callback' => array( $this, 'verify_signature' ),
 					'args'                => array(
 						'page'     => array(
 							'description' => 'Current page of the collection.',
@@ -92,7 +91,15 @@ class Followers_Controller extends Actors_Controller {
 				array(
 					'methods'             => \WP_REST_Server::READABLE,
 					'callback'            => array( $this, 'get_partial_followers' ),
-					'permission_callback' => array( 'Activitypub\Rest\Server', 'verify_signature' ),
+
+					/*
+					 * FEP-8fcf requires that the partial followers collection only be
+					 * disclosed to an authenticated peer. Force signature verification
+					 * even when Authorized Fetch is globally disabled.
+					 */
+					'permission_callback' => function ( $request ) {
+						return $this->verify_signature( $request, true );
+					},
 					'args'                => array(
 						'authority' => array(
 							'description' => 'The host to filter followers by.',
@@ -158,7 +165,7 @@ class Followers_Controller extends Actors_Controller {
 			$response = array( '@context' => Base_Object::JSON_LD_CONTEXT ) + $response;
 		}
 
-		if ( Actors::show_social_graph( $user_id ) ) {
+		if ( $this->show_social_graph( $request ) ) {
 			$response['orderedItems'] = \array_filter(
 				\array_map(
 					static function ( $item ) use ( $context ) {
@@ -199,7 +206,22 @@ class Followers_Controller extends Actors_Controller {
 		$user_id   = $request->get_param( 'user_id' );
 		$authority = $request->get_param( 'authority' );
 
-		// Get partial followers filtered by authority.
+		/*
+		 * FEP-8fcf: the responding server MUST ensure the requested authority
+		 * matches the signing peer, so that instances cannot "get tricked
+		 * into requesting the followers list of a third-party individual".
+		 */
+		$signer_host = self::get_signer_host( $request );
+		$asked_host  = \strtolower( (string) \wp_parse_url( (string) $authority, \PHP_URL_HOST ) );
+
+		if ( ! $signer_host || ! $asked_host || $signer_host !== $asked_host ) {
+			return new \WP_Error(
+				'activitypub_authority_mismatch',
+				\__( 'The authority parameter must match the signing peer.', 'activitypub' ),
+				array( 'status' => 403 )
+			);
+		}
+
 		$followers = Followers::get_by_authority( $user_id, $authority );
 		$followers = \wp_list_pluck( $followers, 'guid' );
 
@@ -226,6 +248,38 @@ class Followers_Controller extends Actors_Controller {
 		$response->header( 'Content-Type', 'application/activity+json; charset=' . \get_option( 'blog_charset' ) );
 
 		return $response;
+	}
+
+	/**
+	 * Resolve the signing peer's host from the request's HTTP Signature header.
+	 *
+	 * Supports both Cavage-style `Signature: keyId="…"` and RFC 9421's
+	 * `Signature-Input: …keyid="…"`. Returns the host component of the key
+	 * ID URI, lowercased, or an empty string when none is present.
+	 *
+	 * @since 8.1.0
+	 *
+	 * @param \WP_REST_Request $request The request object.
+	 * @return string The signer's host, or an empty string.
+	 */
+	private static function get_signer_host( $request ) {
+		$signature = $request->get_header( 'signature' );
+		$key_id    = null;
+
+		if ( $signature && \preg_match( '/keyId="([^"]+)"/i', $signature, $matches ) ) {
+			$key_id = $matches[1];
+		} else {
+			$signature_input = $request->get_header( 'signature-input' );
+			if ( $signature_input && \preg_match( '/keyid="([^"]+)"/i', $signature_input, $matches ) ) {
+				$key_id = $matches[1];
+			}
+		}
+
+		if ( ! $key_id ) {
+			return '';
+		}
+
+		return \strtolower( (string) \wp_parse_url( $key_id, \PHP_URL_HOST ) );
 	}
 
 	/**
