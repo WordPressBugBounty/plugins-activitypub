@@ -50,7 +50,7 @@ function use_authorized_fetch() {
 	 *
 	 * @param boolean $use_authorized_fetch True if Authorized-Fetch is enabled, false otherwise.
 	 */
-	return apply_filters( 'activitypub_use_authorized_fetch', $use );
+	return \apply_filters( 'activitypub_use_authorized_fetch', $use );
 }
 
 /**
@@ -90,18 +90,18 @@ function get_remote_metadata_by_actor( $actor, $cached = true ) { // phpcs:ignor
 	 *                      Default false to continue with the remote request.
 	 * @param string $actor The actor URL.
 	 */
-	$pre = apply_filters( 'pre_get_remote_metadata_by_actor', false, $actor );
+	$pre = \apply_filters( 'pre_get_remote_metadata_by_actor', false, $actor );
 	if ( $pre ) {
 		return $pre;
 	}
 
 	$remote_actor = Remote_Actors::fetch_by_various( $actor );
 
-	if ( is_wp_error( $remote_actor ) ) {
+	if ( \is_wp_error( $remote_actor ) ) {
 		return $remote_actor;
 	}
 
-	return json_decode( $remote_actor->post_content, true );
+	return \json_decode( $remote_actor->post_content, true );
 }
 
 /**
@@ -128,15 +128,36 @@ function get_remote_metadata_by_actor( $actor, $cached = true ) { // phpcs:ignor
  * @return string|false A safe public IP, or false when no safe address is available.
  */
 function resolve_public_host( $host ) {
-	if ( ! is_string( $host ) || '' === $host ) {
+	if ( ! \is_string( $host ) || '' === $host ) {
 		return false;
 	}
 
 	// Normalise bracketed IPv6 literals (parse_url returns "[::1]").
 	$host = \trim( $host, '[]' );
 
+	/**
+	 * Filters whether a non-public host may be used.
+	 *
+	 * Returning true skips this function's private/reserved-range validation and returns the resolved
+	 * address as is, for sites that federate over a private network or intranet. A host that does not
+	 * resolve at all is still rejected.
+	 *
+	 * Note: Callers that fetch through WordPress' safe HTTP APIs (wp_safe_remote_get()/post())
+	 * are still subject to core's own loopback/RFC1918 rejection outside its same-host exception.
+	 * Re-enabling those ranges additionally requires filtering WordPress core (e.g.
+	 * http_request_reject_unsafe_urls).
+	 *
+	 * @param bool   $allow Whether to allow the non-public host. Default false.
+	 * @param string $host  The host being resolved.
+	 */
+	$allow_non_public = \apply_filters( 'activitypub_allow_non_public_host', false, $host );
+
 	// Already an IP literal — validate directly. Accepts IPv4 and IPv6.
 	if ( \filter_var( $host, FILTER_VALIDATE_IP ) ) {
+		if ( $allow_non_public ) {
+			return $host;
+		}
+
 		if ( is_unsafe_ipv6_literal( $host ) ) {
 			return false;
 		}
@@ -182,6 +203,11 @@ function resolve_public_host( $host ) {
 		return false;
 	}
 
+	// A host that resolves may be used as is when non-public hosts are explicitly allowed.
+	if ( $allow_non_public ) {
+		return $ipv4[0] ?? $ipv6[0];
+	}
+
 	foreach ( $ipv4 as $ip ) {
 		if ( ! \filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE ) ) {
 			return false;
@@ -213,7 +239,7 @@ function resolve_public_host( $host ) {
  */
 function is_ipv4_mapped_ipv6( $ip ) {
 	// Short-circuit before inet_pton() so it doesn't emit a warning for non-IP input.
-	if ( ! is_string( $ip ) || ! \filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6 ) ) {
+	if ( ! \is_string( $ip ) || ! \filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6 ) ) {
 		return false;
 	}
 
@@ -251,7 +277,7 @@ function is_ipv4_mapped_ipv6( $ip ) {
  * @return bool True if the value is an unsafe IPv6 literal.
  */
 function is_unsafe_ipv6_literal( $ip ) {
-	if ( ! is_string( $ip ) || ! \filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6 ) ) {
+	if ( ! \is_string( $ip ) || ! \filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6 ) ) {
 		return false;
 	}
 

@@ -229,17 +229,16 @@ class Query {
 		 *
 		 * @param \WP_Term|\WP_Post_Type|\WP_Post|\WP_User|\WP_Comment|null $queried_object The queried object.
 		 */
-		return apply_filters( 'activitypub_queried_object', $queried_object );
+		return \apply_filters( 'activitypub_queried_object', $queried_object );
 	}
 
 	/**
 	 * Get the virtual object.
 	 *
 	 * Virtual objects are objects that are not stored in the database, but are created on the fly.
-	 * The plugins currently supports two virtual objects: The Blog-Actor and the Application-Actor.
+	 * The plugin currently supports one virtual object: The Blog-Actor.
 	 *
 	 * @see \Activitypub\Model\Blog
-	 * @see \Activitypub\Model\Application
 	 *
 	 * @return object|null The virtual object.
 	 */
@@ -252,7 +251,7 @@ class Query {
 
 		$author_id = url_to_authorid( $url );
 
-		if ( ! is_numeric( $author_id ) ) {
+		if ( ! \is_numeric( $author_id ) ) {
 			$author_id = $url;
 		}
 
