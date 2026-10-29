@@ -10,9 +10,12 @@ namespace Activitypub\Handler;
 use Activitypub\Activity\Activity;
 use Activitypub\Collection\Actors;
 use Activitypub\Collection\Followers;
+use Activitypub\Collection\Inbox;
 use Activitypub\Collection\Remote_Actors;
+use Activitypub\Proxy;
 
 use function Activitypub\add_to_outbox;
+use function Activitypub\is_same_actor;
 use function Activitypub\is_same_host;
 use function Activitypub\object_to_uri;
 use function Activitypub\user_can_activitypub;
@@ -38,9 +41,11 @@ class Feature_Request {
 
 	/**
 	 * Initialize the class, registering WordPress hooks.
+	 *
+	 * @return void
 	 */
 	public static function init() {
-		\add_action( 'activitypub_inbox_feature_request', array( self::class, 'handle_feature_request' ), 10, 2 );
+		\add_action( 'activitypub_inbox_feature_request', array( self::class, 'handle_feature_request' ), 10, 4 );
 		\add_action( 'activitypub_rest_inbox_disallowed', array( self::class, 'handle_blocked_request' ), 10, 3 );
 
 		\add_filter( 'activitypub_validate_object', array( self::class, 'validate_object' ), 10, 3 );
@@ -49,11 +54,14 @@ class Feature_Request {
 	/**
 	 * Handle FeatureRequest activities.
 	 *
-	 * @param array     $activity The activity object.
-	 * @param int|int[] $user_ids The user ID(s) targeted by the inbox dispatch.
+	 * @param array         $activity        The activity object.
+	 * @param int|int[]     $user_ids        The user ID(s) targeted by the inbox dispatch.
+	 * @param Activity|null $activity_object Optional. The activity object. Default null.
+	 * @param string|null   $context         Optional. The inbox context. Default null.
+	 *
+	 * @return void
 	 */
-	public static function handle_feature_request( $activity, $user_ids ) {
-		$state      = true;
+	public static function handle_feature_request( $activity, $user_ids, $activity_object = null, $context = null ) { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable
 		$object_uri = object_to_uri( $activity['object'] );
 		$target     = Actors::get_by_resource( $object_uri );
 
@@ -65,32 +73,66 @@ class Feature_Request {
 
 		$user_id = $target->get__id();
 
+		// Only the featured actor can approve; a request in another actor's inbox did not ask them, so that actor declines it.
+		if ( ! \in_array( (int) $user_id, \array_map( 'intval', (array) $user_ids ), true ) ) {
+			// The shared inbox runs this once per recipient; the featured actor's run answers, the others stay silent.
+			if ( Inbox::CONTEXT_SHARED_INBOX === $context ) {
+				return;
+			}
+
+			self::queue_reject( $activity, \is_array( $user_ids ) ? \reset( $user_ids ) : $user_ids );
+			return;
+		}
+
 		$policy = \get_option( 'activitypub_default_feature_policy', ACTIVITYPUB_INTERACTION_POLICY_ME );
 
 		switch ( $policy ) {
 			case ACTIVITYPUB_INTERACTION_POLICY_ANYONE:
-				self::queue_accept( $activity, $user_id );
+				$state = true;
 				break;
 
 			case ACTIVITYPUB_INTERACTION_POLICY_FOLLOWERS:
 				$follower = Remote_Actors::get_by_uri( object_to_uri( $activity['actor'] ) );
-				if ( ! \is_wp_error( $follower ) && Followers::follows( $follower->ID, $user_id ) ) {
-					self::queue_accept( $activity, $user_id );
-				} else {
-					self::queue_reject( $activity, $user_id );
-					$state = false;
-				}
+				$state    = ! \is_wp_error( $follower ) && Followers::follows( $follower->ID, $user_id );
 				break;
 
 			case ACTIVITYPUB_INTERACTION_POLICY_ME:
 			default:
-				self::queue_reject( $activity, $user_id );
 				$state = false;
 				break;
 		}
 
+		/*
+		 * The approval is issued for the instrument, so it has to be the requesting actor's own
+		 * collection. Sharing the actor's host is not enough. A policy that rejects needs no
+		 * proof, so the collection is only fetched for an approval.
+		 */
+		if ( $state ) {
+			$instrument = Proxy::get( object_to_uri( $activity['instrument'] ) );
+
+			/*
+			 * Without the collection there is nothing to decide: a Reject would be final, and an
+			 * Accept would be unproven. So the request is dropped, like any inbox activity whose
+			 * fetch fails.
+			 */
+			if ( \is_wp_error( $instrument ) ) {
+				return;
+			}
+
+			// The fetched collection has to be the instrument itself; an alias or redirect could otherwise lend another collection's owner.
+			$state = is_same_actor( $instrument['id'] ?? null, object_to_uri( $activity['instrument'] ) ) && is_same_actor( $instrument['attributedTo'] ?? null, $activity['actor'] );
+		}
+
+		if ( $state ) {
+			self::queue_accept( $activity, $user_id );
+		} else {
+			self::queue_reject( $activity, $user_id );
+		}
+
 		/**
-		 * Fires after an ActivityPub FeatureRequest activity has been handled.
+		 * Fires after an ActivityPub FeatureRequest activity has been answered.
+		 *
+		 * Not fired when the featured collection cannot be fetched, since the request is dropped unanswered.
 		 *
 		 * @param array  $activity The ActivityPub activity data.
 		 * @param int[]  $user_ids The local user IDs.
@@ -106,6 +148,8 @@ class Feature_Request {
 	 * @param array          $activity The activity array.
 	 * @param int|int[]|null $user_ids The user ID(s).
 	 * @param string         $type     The activity type.
+	 *
+	 * @return void
 	 */
 	public static function handle_blocked_request( $activity, $user_ids, $type ) {
 		if ( ! \in_array( \strtolower( $type ), array( 'featurerequest', 'feature_request' ), true ) ) {
@@ -124,6 +168,8 @@ class Feature_Request {
 	 *
 	 * @param array $activity_object The activity object.
 	 * @param int   $user_id         The local user ID being featured (0 for the blog actor).
+	 *
+	 * @return void
 	 */
 	public static function queue_accept( $activity_object, $user_id ) {
 		if ( ! user_can_activitypub( $user_id ) ) {
@@ -286,6 +332,8 @@ class Feature_Request {
 	 *
 	 * @param array $activity_object The activity object.
 	 * @param int   $user_id         The user ID.
+	 *
+	 * @return void
 	 */
 	public static function queue_reject( $activity_object, $user_id ) {
 		if ( ! user_can_activitypub( $user_id ) ) {

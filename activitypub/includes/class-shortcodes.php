@@ -13,6 +13,8 @@ namespace Activitypub;
 class Shortcodes {
 	/**
 	 * Register the shortcodes.
+	 *
+	 * @return void
 	 */
 	public static function register() {
 		foreach ( \get_class_methods( self::class ) as $shortcode ) {
@@ -24,6 +26,8 @@ class Shortcodes {
 
 	/**
 	 * Unregister the shortcodes.
+	 *
+	 * @return void
 	 */
 	public static function unregister() {
 		foreach ( \get_class_methods( self::class ) as $shortcode ) {
@@ -147,21 +151,19 @@ class Shortcodes {
 	 *
 	 * @return string The post content.
 	 */
-	public static function content( $attributes, $content, $tag ) {
+	public static function content( $attributes, $content, $tag ) { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable, Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed
 		$item = self::get_item();
 
 		if ( ! $item ) {
 			return '';
 		}
 
+		if ( isset( $attributes['apply_filters'] ) && 'no' === $attributes['apply_filters'] ) {
+			\_doing_it_wrong( __METHOD__, \esc_html__( 'The apply_filters attribute was removed. To keep a filter out of federated content, remove it in the activitypub_before_get_content action instead.', 'activitypub' ), '9.4.0' );
+		}
+
 		// Prevent inception.
 		\remove_shortcode( 'ap_content' );
-
-		$attributes = \shortcode_atts(
-			array( 'apply_filters' => 'yes' ),
-			$attributes,
-			$tag
-		);
 
 		$content = '';
 
@@ -177,16 +179,8 @@ class Shortcodes {
 			$content = \get_post_field( 'post_content', $item );
 		}
 
-		if ( 'yes' === $attributes['apply_filters'] ) {
-			/** This filter is documented in wp-includes/post-template.php */
-			$content = \apply_filters( 'the_content', $content );
-		} else {
-			if ( site_supports_blocks() ) {
-				$content = \do_blocks( $content );
-			}
-			$content = \wptexturize( $content );
-			$content = \wp_filter_content_tags( $content );
-		}
+		/** This filter is documented in wp-includes/post-template.php */
+		$content = \apply_filters( 'the_content', $content );
 
 		$content = \strip_shortcodes( $content );
 		$content = Sanitize::clean_html( $content );
@@ -331,7 +325,7 @@ class Shortcodes {
 			return '';
 		}
 
-		$author_id = \get_post_field( 'post_author', $item->ID );
+		$author_id = (int) \get_post_field( 'post_author', $item->ID );
 		$name      = \get_the_author_meta( 'display_name', $author_id );
 
 		if ( ! $name ) {
@@ -353,7 +347,7 @@ class Shortcodes {
 			return '';
 		}
 
-		$author_id = \get_post_field( 'post_author', $item->ID );
+		$author_id = (int) \get_post_field( 'post_author', $item->ID );
 		$url       = \get_the_author_meta( 'user_url', $author_id );
 
 		if ( ! $url ) {

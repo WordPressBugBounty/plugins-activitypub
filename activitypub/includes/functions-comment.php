@@ -40,7 +40,7 @@ function object_id_to_comment( $id, $args = array() ) {
  *
  * @param string $url The URL to check.
  *
- * @return string|null Comment ID or null if not found
+ * @return int|null Comment ID or null if not found
  */
 function url_to_commentid( $url ) {
 	return Comment::url_to_commentid( $url );
@@ -163,6 +163,24 @@ function register_comment_type( $comment_type, $args = array() ) {
 
 	// Sanitize comment type name.
 	$comment_type = \sanitize_key( $comment_type );
+
+	// Every key the plugin reads, so a type registered with only some of them does not break the others.
+	$args = \wp_parse_args(
+		$args,
+		array(
+			'label'          => $comment_type,
+			'singular'       => $comment_type,
+			'description'    => '',
+			'icon'           => '',
+			'class'          => '',
+			'type'           => $comment_type,
+			'collection'     => $comment_type,
+			'activity_types' => array(),
+			'excerpt'        => '',
+			'count_single'   => '%d',
+			'count_plural'   => '%d',
+		)
+	);
 
 	$activitypub_comment_types[ $comment_type ] = $args;
 

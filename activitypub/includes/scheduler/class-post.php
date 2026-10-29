@@ -22,9 +22,12 @@ use function Activitypub\is_post_publicly_queryable;
 class Post {
 	/**
 	 * Initialize the class, registering WordPress hooks.
+	 *
+	 * @return void
 	 */
 	public static function init() {
 		// Post transitions.
+		\add_action( 'pre_post_update', array( self::class, 'save_canonical_url' ) );
 		\add_action( 'wp_after_insert_post', array( self::class, 'triage' ), 33, 4 );
 
 		// Attachment transitions.
@@ -47,14 +50,38 @@ class Post {
 	}
 
 	/**
+	 * Preserve the published URL before post fields and terms change.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @param int $post_id Post ID.
+	 * @return void
+	 */
+	public static function save_canonical_url( $post_id ) {
+		$post = \get_post( $post_id );
+		if ( ! $post || 'attachment' === $post->post_type || 'publish' !== $post->post_status || ACTIVITYPUB_OBJECT_STATE_FEDERATED !== get_wp_object_state( $post ) ) {
+			return;
+		}
+
+		\add_post_meta( $post_id, '_activitypub_canonical_url', \get_permalink( $post_id ), true );
+	}
+
+	/**
 	 * Triage post transitions and determine the appropriate Activity type.
 	 *
 	 * @param int      $post_id     Post ID.
 	 * @param \WP_Post $post        Post object.
 	 * @param bool     $update      Whether this is an existing post being updated.
 	 * @param \WP_Post $post_before Post object before the update.
+	 *
+	 * @return void
 	 */
 	public static function triage( $post_id, $post, $update, $post_before ) {
+		$is_queryable = is_post_publicly_queryable( $post );
+		if ( 'attachment' !== $post->post_type && 'publish' === $post->post_status && $is_queryable ) {
+			\delete_post_meta( $post_id, '_activitypub_canonical_url' );
+		}
+
 		if ( \defined( 'WP_IMPORTING' ) && WP_IMPORTING ) {
 			return;
 		}
@@ -64,7 +91,6 @@ class Post {
 		}
 
 		$object_status = get_wp_object_state( $post );
-		$is_queryable  = is_post_publicly_queryable( $post );
 
 		// If the post is already soft-deleted and still non-public, do not create any more activities.
 		if ( ACTIVITYPUB_OBJECT_STATE_DELETED === $object_status && ! $is_queryable ) {
@@ -155,13 +181,15 @@ class Post {
 			$type = 'Delete';
 		}
 
-		add_to_outbox( $post, $type, $post->post_author );
+		add_to_outbox( $post, $type, (int) $post->post_author );
 	}
 
 	/**
 	 * Schedules Activities for attachment transitions.
 	 *
 	 * @param int $post_id Attachment ID.
+	 *
+	 * @return void
 	 */
 	public static function transition_attachment_status( $post_id ) {
 		if ( \defined( 'WP_IMPORTING' ) && WP_IMPORTING ) {
@@ -196,13 +224,15 @@ class Post {
 				return;
 		}
 
-		add_to_outbox( $post, $type, $post->post_author );
+		add_to_outbox( $post, $type, (int) $post->post_author );
 	}
 
 	/**
 	 * Schedule an Add activity when a post is added to the featured collection.
 	 *
 	 * @param int $post_id The post ID.
+	 *
+	 * @return void
 	 */
 	public static function schedule_featured_add( $post_id ) {
 		self::schedule_featured_update( $post_id, 'Add' );
@@ -212,6 +242,8 @@ class Post {
 	 * Schedule a Remove activity when a post is removed from the featured collection.
 	 *
 	 * @param int $post_id The post ID.
+	 *
+	 * @return void
 	 */
 	public static function schedule_featured_remove( $post_id ) {
 		self::schedule_featured_update( $post_id, 'Remove' );
@@ -227,6 +259,8 @@ class Post {
 	 *
 	 * @param int    $post_id       The post ID.
 	 * @param string $activity_type The activity type ('Add' or 'Remove').
+	 *
+	 * @return void
 	 */
 	private static function schedule_featured_update( $post_id, $activity_type ) {
 		if ( \defined( 'WP_IMPORTING' ) && WP_IMPORTING ) {
@@ -243,7 +277,7 @@ class Post {
 			return;
 		}
 
-		$actor = Actors::get_by_id( $post->post_author );
+		$actor = Actors::get_by_id( (int) $post->post_author );
 
 		if ( ! $actor || \is_wp_error( $actor ) ) {
 			return;
@@ -255,6 +289,6 @@ class Post {
 		$activity->set_object( get_post_id( $post->ID ) );
 		$activity->set_target( $actor->get_featured() );
 
-		add_to_outbox( $activity, null, $post->post_author );
+		add_to_outbox( $activity, null, (int) $post->post_author );
 	}
 }

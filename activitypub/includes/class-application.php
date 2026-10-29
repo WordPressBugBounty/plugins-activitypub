@@ -39,6 +39,8 @@ class Application {
 	 * Initialize the class, registering WordPress hooks.
 	 *
 	 * @since 9.1.0
+	 *
+	 * @return void
 	 */
 	public static function init() {
 		/*
@@ -263,7 +265,7 @@ class Application {
 		$application_id = self::get_id();
 
 		return array(
-			'subject' => sprintf( 'acct:%s', self::get_webfinger() ),
+			'subject' => Webfinger::get_acct( self::get_webfinger() ),
 			'aliases' => array( $application_id ),
 			'links'   => array(
 				array(
@@ -296,18 +298,8 @@ class Application {
 
 		list( $identifier, $host ) = $identifier_and_host;
 
-		/*
-		 * The resource must point at this site, or at its pre-migration host. Both sides are folded:
-		 * the requested host is whatever the caller typed, and the stored ones are whatever an admin did.
-		 */
-		$host = normalize_host( fold_host( $host ) );
-
-		// A host of `.` or `[]` folds away to nothing, which would otherwise match an unset old host.
-		if ( '' === $host ) {
-			return false;
-		}
-
-		if ( normalize_host( fold_host( home_host() ) ) !== $host && normalize_host( fold_host( \get_option( 'activitypub_old_host' ) ) ) !== $host ) {
+		// The resource must point at this site, or at its pre-migration host.
+		if ( ! is_local_host( $host ) ) {
 			return false;
 		}
 

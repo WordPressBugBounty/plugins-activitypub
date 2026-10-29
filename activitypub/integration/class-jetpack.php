@@ -9,7 +9,8 @@ namespace Activitypub\Integration;
 
 use Activitypub\Collection\Followers;
 use Activitypub\Collection\Following;
-use Activitypub\Http;
+use Activitypub\Comment;
+use Activitypub\Proxy;
 use Automattic\Jetpack\Connection\Manager;
 use Automattic\Jetpack\Podcast\Feed\Customize_Feed;
 use Automattic\Jetpack\Podcast\Feed\Episode_Block_Tags;
@@ -27,6 +28,8 @@ class Jetpack {
 
 	/**
 	 * Initialize the class, registering WordPress hooks.
+	 *
+	 * @return void
 	 */
 	public static function init() {
 		if ( ! \defined( 'IS_WPCOM' ) ) {
@@ -111,7 +114,12 @@ class Jetpack {
 		$comment_types[] = 'quote';
 		$comment_types[] = 'repost';
 
-		return \array_unique( $comment_types );
+		// Types other plugins register are only known after init, the built-in ones above always are.
+		if ( \did_action( 'init' ) ) {
+			$comment_types = \array_merge( $comment_types, Comment::get_comment_type_slugs() );
+		}
+
+		return \array_values( \array_unique( $comment_types ) );
 	}
 
 	/**
@@ -165,6 +173,8 @@ class Jetpack {
 
 	/**
 	 * Adapt the parameters for a post share request to be compatible with the Federated Reply block.
+	 *
+	 * @return void
 	 */
 	public static function adapt_post_share() {
 		if ( ! isset( $_GET['is_post_share'], $_GET['url'] ) || ! $_GET['is_post_share'] ) { // phpcs:ignore WordPress.Security
@@ -173,7 +183,7 @@ class Jetpack {
 
 		$url = \sanitize_url( \wp_unslash( $_GET['url'] ) ); // phpcs:ignore WordPress.Security.NonceVerification
 
-		if ( is_activity_object( Http::get_remote_object( $url ) ) ) {
+		if ( is_activity_object( Proxy::get( $url ) ) ) {
 			$args = array(
 				'post_type'   => 'post',
 				'in_reply_to' => $url,

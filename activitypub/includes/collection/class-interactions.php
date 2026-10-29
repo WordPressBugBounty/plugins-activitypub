@@ -12,12 +12,15 @@ use Activitypub\Emoji;
 use Activitypub\Sanitize;
 use Activitypub\Webfinger;
 
+use function Activitypub\get_quote_url;
 use function Activitypub\get_remote_metadata_by_actor;
+use function Activitypub\get_target_post_id;
 use function Activitypub\is_ap_post;
 use function Activitypub\is_post_disabled;
 use function Activitypub\is_same_host;
 use function Activitypub\object_id_to_comment;
 use function Activitypub\object_to_uri;
+use function Activitypub\process_remote_images;
 use function Activitypub\url_to_commentid;
 
 /**
@@ -60,7 +63,7 @@ class Interactions {
 			$parent_comment_id = url_to_commentid( $target_url );
 		} else {
 			// Check for quote.
-			$target_url = self::get_quote_url( $activity );
+			$target_url = get_quote_url( $activity );
 
 			if ( ! $target_url ) {
 				return false;
@@ -79,27 +82,25 @@ class Interactions {
 			}
 		}
 
-		// Get post ID from target URL.
-		$target_url      = \esc_url_raw( $target_url );
-		$comment_post_id = \url_to_postid( $target_url );
-
-		if ( ! $comment_post_id ) {
-			// Check for `ap_post`.
-			$comment_post = Remote_Posts::get_by_guid( $target_url );
-			if ( $comment_post instanceof \WP_Post ) {
-				$comment_post_id = $comment_post->ID;
-			}
-		}
-
-		// Handle nested replies (replies to comments).
-		if ( ! $comment_post_id && $parent_comment_id ) {
-			$parent_comment  = \get_comment( $parent_comment_id );
-			$comment_post_id = $parent_comment->comment_post_ID;
-		}
+		$comment_post_id = get_target_post_id( $target_url, $parent_comment_id );
 
 		if ( ! $comment_post_id ) {
 			// Not a reply to a post or comment.
 			return false;
+		}
+
+		/*
+		 * Image blocks are only for remote replies and quotes. They are built here, not in
+		 * activity_to_comment(), which reactions share.
+		 */
+		$images = '';
+		if ( null === $user_id ) {
+			$images = process_remote_images( '', self::get_image_attachments( $activity['object'] ) );
+
+			// Validation lets image-only replies in without checking the hosts, at least one image has to pass.
+			if ( '' === $images && ! isset( $activity['object']['content'] ) ) {
+				return false;
+			}
 		}
 
 		/*
@@ -111,6 +112,8 @@ class Interactions {
 		if ( ! $comment_data ) {
 			return false;
 		}
+
+		$comment_data['comment_content'] .= \addslashes( $images );
 
 		if ( $comment_type ) {
 			$comment_data['comment_type'] = $comment_type;
@@ -136,8 +139,9 @@ class Interactions {
 			return $meta;
 		}
 
-		// Determine comment_ID.
-		$comment      = object_id_to_comment( \esc_url_raw( $activity['object']['id'] ) );
+		// Determine comment_ID, by the same identifier add_comment() stored it under.
+		$object_id    = object_to_uri( $activity['object'] );
+		$comment      = object_id_to_comment( \esc_url_raw( $object_id ) );
 		$comment_data = \get_comment( $comment, ARRAY_A );
 
 		if ( ! $comment_data ) {
@@ -152,15 +156,16 @@ class Interactions {
 		 * points at it.
 		 *
 		 * Comments created before this mapping existed have no owner recorded; those are let
-		 * through for backward compatibility (matching the Undo path) rather than becoming
-		 * permanently un-editable. On mismatch, return a WP_Error rather than false: false would
-		 * make the Update handler fall back to Create (which re-dispatches to Update for an
-		 * existing comment and recurses), while the unchanged comment array would be read as a
-		 * successful update and relayed onward. A WP_Error is handled but unsuccessful: no Create
-		 * fallback, and the handled-update success flag stays false.
+		 * through for backward compatibility, but only from the host of the identifier the comment
+		 * was found by, as in add_comment(). A recorded owner whose actor post is gone is rejected.
+		 * On mismatch, return a WP_Error rather than false: false would make the Update handler
+		 * fall back to Create (which re-dispatches to Update for an existing comment and recurses),
+		 * while the unchanged comment array would be read as a successful update and relayed
+		 * onward. A WP_Error is handled but unsuccessful: no Create fallback, and the
+		 * handled-update success flag stays false.
 		 */
-		$owner = \get_post( (int) \get_comment_meta( $comment_data['comment_ID'], '_activitypub_remote_actor_id', true ) );
-		if ( $owner instanceof \WP_Post && object_to_uri( $activity['actor'] ) !== $owner->guid ) {
+		$owner_id = (int) \get_comment_meta( $comment_data['comment_ID'], '_activitypub_remote_actor_id', true );
+		if ( $owner_id ? object_to_uri( $activity['actor'] ) !== \get_post_field( 'guid', $owner_id, 'raw' ) : ! is_same_host( $activity['actor'], $object_id ) ) {
 			return new \WP_Error(
 				'activitypub_update_forbidden',
 				\__( 'The Update actor does not own the target comment.', 'activitypub' )
@@ -176,6 +181,7 @@ class Interactions {
 		 */
 		$content                         = Sanitize::comment_content( $activity['object']['content'] ?? '' );
 		$content                         = Emoji::wrap_in_content( $content, $activity['object'] );
+		$content                        .= process_remote_images( '', self::get_image_attachments( $activity['object'] ) );
 		$comment_data['comment_content'] = \addslashes( $content );
 
 		$result = self::persist( $comment_data, self::UPDATE );
@@ -215,21 +221,8 @@ class Interactions {
 		}
 
 		$url               = object_to_uri( $activity['object'] );
-		$comment_post_id   = \url_to_postid( $url );
 		$parent_comment_id = url_to_commentid( $url );
-
-		if ( ! $comment_post_id ) {
-			// Check for `ap_post`.
-			$comment_post = Remote_Posts::get_by_guid( $url );
-			if ( $comment_post instanceof \WP_Post ) {
-				$comment_post_id = $comment_post->ID;
-			}
-		}
-
-		if ( ! $comment_post_id && $parent_comment_id ) {
-			$parent_comment  = \get_comment( $parent_comment_id );
-			$comment_post_id = $parent_comment->comment_post_ID;
-		}
+		$comment_post_id   = get_target_post_id( $url, $parent_comment_id );
 
 		if ( ! $comment_post_id ) {
 			// Not a reply to a post or comment.
@@ -399,6 +392,21 @@ class Interactions {
 	}
 
 	/**
+	 * Force Akismet's comment nonce check to `inactive` while persisting.
+	 *
+	 * Inbound activities have no browser-issued nonce, so Akismet's nonce
+	 * verification cannot apply to this submission route. A named method (rather
+	 * than an anonymous closure) is used so it can be removed by reference again.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @return string Always `inactive`.
+	 */
+	public static function akismet_comment_nonce_inactive() {
+		return 'inactive';
+	}
+
+	/**
 	 * Convert an Activity to a WP_Comment.
 	 *
 	 * When $user_id is provided, comment author data is built from the
@@ -410,99 +418,181 @@ class Interactions {
 	 * @return array|false The comment data or false on failure.
 	 */
 	public static function activity_to_comment( $activity, $user_id = null ) {
-		$comment_content = null;
+		$comment = $user_id
+			? self::prepare_local_comment_data( $activity, $user_id )
+			: self::prepare_remote_comment_data( $activity );
 
-		if ( $user_id ) {
-			// Outbox: resolve author from the local WordPress user.
-			$user = \get_userdata( $user_id );
-
-			if ( ! $user ) {
-				return false;
-			}
-
-			$comment_author       = \wp_slash( $user->display_name );
-			$comment_author_url   = $user->user_url;
-			$comment_author_email = $user->user_email;
-			// Same gate and slashing as the remote branch: one policy for the column, whatever wrote it.
-			$comment_content = \addslashes( Sanitize::comment_content( $activity['object']['content'] ?? '' ) );
-		} else {
-			// S2S: resolve author from remote actor metadata.
-			$actor = object_to_uri( $activity['actor'] ?? null );
-			$actor = get_remote_metadata_by_actor( $actor );
-
-			if ( ! $actor || \is_wp_error( $actor ) ) {
-				return false;
-			}
-
-			$comment_author = null;
-			if ( ! empty( $actor['name'] ) ) {
-				$comment_author = $actor['name'];
-			} elseif ( ! empty( $actor['preferredUsername'] ) ) {
-				$comment_author = $actor['preferredUsername'];
-			}
-
-			if ( empty( $comment_author ) && \get_option( 'require_name_email' ) ) {
-				return false;
-			}
-
-			// Core's `pre_comment_author_name` chain sanitizes this column on the way in, so only
-			// the slashing is ours: wp_new_comment() unslashes the whole array.
-			$comment_author     = \wp_slash( $comment_author ?? \__( 'Anonymous', 'activitypub' ) );
-			$comment_author_url = \esc_url_raw( object_to_uri( $actor['url'] ?? $actor['id'] ) );
-
-			$webfinger = Webfinger::uri_to_acct( $comment_author_url );
-			if ( \is_wp_error( $webfinger ) ) {
-				$comment_author_email = '';
-			} else {
-				$comment_author_email = \str_replace( 'acct:', '', $webfinger );
-			}
-
-			if ( isset( $activity['object']['content'] ) ) {
-				/*
-				 * Sanitize before wrapping: emoji blocks are our own markup, and kses would
-				 * mangle the block comments they are made of.
-				 */
-				$content         = Sanitize::comment_content( $activity['object']['content'] );
-				$content         = Emoji::wrap_in_content( $content, $activity['object'] );
-				$comment_content = \addslashes( $content );
-			}
+		if ( ! $comment ) {
+			return false;
 		}
 
 		$published = $activity['object']['published'] ?? $activity['published'] ?? 'now';
 		$gm_date   = \gmdate( 'Y-m-d H:i:s', \strtotime( $published ) );
 
-		$comment_data = array(
+		return \array_merge(
+			$comment,
+			array(
+				'comment_type'     => 'comment',
+				'comment_date'     => \get_date_from_gmt( $gm_date ),
+				'comment_date_gmt' => $gm_date,
+			)
+		);
+	}
+
+	/**
+	 * Prepare comment fields for a local author.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @param array $activity The Activity array.
+	 * @param int   $user_id  The local WordPress user ID.
+	 *
+	 * @return array|false The prepared fields, or false when the user is unavailable.
+	 */
+	private static function prepare_local_comment_data( $activity, $user_id ) {
+		$user = \get_userdata( $user_id );
+
+		if ( ! $user ) {
+			return false;
+		}
+
+		return array(
+			'comment_author'       => \wp_slash( $user->display_name ),
+			'comment_author_url'   => $user->user_url,
+			// Same gate and slashing as the remote branch: one policy for the column, whatever wrote it.
+			'comment_content'      => \addslashes( Sanitize::comment_content( $activity['object']['content'] ?? '' ) ),
+			'comment_author_email' => $user->user_email,
+			'comment_meta'         => array(),
+			'user_id'              => $user_id,
+		);
+	}
+
+	/**
+	 * Prepare comment fields for a remote author.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @param array $activity The Activity array.
+	 *
+	 * @return array|false The prepared fields, or false when actor data is unavailable.
+	 */
+	private static function prepare_remote_comment_data( $activity ) {
+		$actor = object_to_uri( $activity['actor'] ?? null );
+		$actor = get_remote_metadata_by_actor( $actor );
+
+		if ( ! $actor || \is_wp_error( $actor ) ) {
+			return false;
+		}
+
+		$comment_author = null;
+		if ( ! empty( $actor['name'] ) ) {
+			$comment_author = $actor['name'];
+		} elseif ( ! empty( $actor['preferredUsername'] ) ) {
+			$comment_author = $actor['preferredUsername'];
+		}
+
+		if ( empty( $comment_author ) && \get_option( 'require_name_email' ) ) {
+			return false;
+		}
+
+		// Core's `pre_comment_author_name` chain sanitizes this column on the way in, so only
+		// the slashing is ours: wp_new_comment() unslashes the whole array.
+		$comment_author     = \wp_slash( $comment_author ?? \__( 'Anonymous', 'activitypub' ) );
+		$comment_author_url = \esc_url_raw( object_to_uri( $actor['url'] ?? $actor['id'] ) );
+		$webfinger          = Webfinger::uri_to_acct( $comment_author_url );
+
+		if ( \is_wp_error( $webfinger ) ) {
+			$comment_author_email = '';
+		} else {
+			$comment_author_email = Sanitize::webfinger( $webfinger );
+		}
+
+		// Sanitize remote HTML before adding our own emoji and image blocks.
+		$content         = Sanitize::comment_content( $activity['object']['content'] ?? '' );
+		$content         = Emoji::wrap_in_content( $content, $activity['object'] );
+		$comment_content = \addslashes( $content );
+
+		return array(
 			'comment_author'       => $comment_author,
 			'comment_author_url'   => $comment_author_url,
 			'comment_content'      => $comment_content,
-			'comment_type'         => 'comment',
 			'comment_author_email' => $comment_author_email,
-			'comment_date'         => \get_date_from_gmt( $gm_date ),
-			'comment_date_gmt'     => $gm_date,
-			'comment_meta'         => array(),
+			'comment_meta'         => self::prepare_remote_comment_meta( $activity ),
 		);
+	}
 
-		if ( $user_id ) {
-			$comment_data['user_id'] = $user_id;
-		} else {
-			$comment_data['comment_meta']['protocol']  = 'activitypub';
-			$comment_data['comment_meta']['source_id'] = \esc_url_raw( object_to_uri( $activity['object'] ) );
+	/**
+	 * Get the image attachments displayed in a remote comment.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @param array $activity_object The ActivityPub object.
+	 * @param bool  $check_hosts     Optional. Whether the hosts must be public. Default true.
+	 *                               Validation before the signature check skips the DNS lookups.
+	 * @return array Image attachments.
+	 */
+	public static function get_image_attachments( $activity_object, $check_hosts = true ) {
+		// WordPress does not show images in comments, so this is opt-in.
+		if ( ! \get_option( 'activitypub_allow_comment_images' ) ) {
+			return array();
+		}
 
-			// Store reference to remote actor post.
-			$actor_uri = object_to_uri( $activity['actor'] ?? null );
-			if ( $actor_uri ) {
-				$remote_actor = Remote_Actors::get_by_uri( $actor_uri );
-				if ( ! \is_wp_error( $remote_actor ) ) {
-					$comment_data['comment_meta']['_activitypub_remote_actor_id'] = $remote_actor->ID;
+		/**
+		 * Filters the maximum number of image attachments displayed in a Fediverse comment.
+		 *
+		 * @since 9.4.0
+		 *
+		 * @param int   $limit           Maximum number of images. Default 3. Zero disables image attachments.
+		 * @param array $activity_object The ActivityPub object.
+		 */
+		$limit = \max( 0, (int) \apply_filters( 'activitypub_comment_image_limit', 3, $activity_object ) );
+
+		if ( ! $limit ) {
+			return array();
+		}
+
+		$images = array();
+		foreach ( Remote_Posts::extract_attachments( $activity_object, \max( 20, $limit ), 'image' ) as $attachment ) {
+			// Comments show images to every visitor, so the host must be public.
+			if ( ! $check_hosts || \wp_http_validate_url( $attachment['url'] ) ) {
+				$images[] = $attachment;
+				if ( \count( $images ) >= $limit ) {
+					break;
 				}
-			}
-
-			if ( isset( $activity['object']['url'] ) ) {
-				$comment_data['comment_meta']['source_url'] = \esc_url_raw( object_to_uri( $activity['object']['url'] ) );
 			}
 		}
 
-		return $comment_data;
+		return $images;
+	}
+
+	/**
+	 * Prepare ActivityPub-specific comment metadata.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @param array $activity The Activity array.
+	 *
+	 * @return array The comment metadata.
+	 */
+	private static function prepare_remote_comment_meta( $activity ) {
+		$comment_meta = array(
+			'protocol'  => 'activitypub',
+			'source_id' => \esc_url_raw( object_to_uri( $activity['object'] ) ),
+		);
+
+		$actor_uri = object_to_uri( $activity['actor'] ?? null );
+		if ( $actor_uri ) {
+			$remote_actor = Remote_Actors::get_by_uri( $actor_uri );
+			if ( ! \is_wp_error( $remote_actor ) ) {
+				$comment_meta['_activitypub_remote_actor_id'] = $remote_actor->ID;
+			}
+		}
+
+		if ( isset( $activity['object']['url'] ) ) {
+			$comment_meta['source_url'] = \esc_url_raw( object_to_uri( $activity['object']['url'] ) );
+		}
+
+		return $comment_meta;
 	}
 
 	/**
@@ -521,35 +611,84 @@ class Interactions {
 			return false;
 		}
 
-		// Disable flood control.
-		\remove_action( 'check_comment_flood', 'check_comment_flood_db' );
-		// Do not require email for AP entries.
-		\add_filter( 'pre_option_require_name_email', '__return_false' );
-		// No nonce possible for this submission route.
-		\add_filter(
-			'akismet_comment_nonce',
-			static function () {
-				return 'inactive';
-			}
-		);
-		\add_filter( 'wp_kses_allowed_html', array( self::class, 'allowed_comment_html' ), 10, 2 );
+		$is_insert        = self::INSERT === $action;
+		$flood_priority   = \has_action( 'check_comment_flood', 'check_comment_flood_db' );
+		$akismet_callback = array( self::class, 'akismet_comment_nonce_inactive' );
+		$kses_callback    = array( self::class, 'allowed_comment_html' );
 
-		if ( self::INSERT === $action ) {
+		// Disable flood control, restoring it at its original priority afterwards.
+		if ( false !== $flood_priority ) {
+			\remove_action( 'check_comment_flood', 'check_comment_flood_db', $flood_priority );
+		}
+
+		\add_filter( 'akismet_comment_nonce', $akismet_callback ); // No nonce possible for this submission route.
+		\add_filter( 'wp_kses_allowed_html', $kses_callback, 10, 2 );
+
+		if ( $is_insert ) {
 			$state = \wp_new_comment( $comment_data, true );
 		} else {
 			$state = \wp_update_comment( $comment_data, true );
 		}
 
-		\remove_filter( 'wp_kses_allowed_html', array( self::class, 'allowed_comment_html' ) );
-		\remove_filter( 'pre_option_require_name_email', '__return_false' );
-		// Restore flood control.
-		\add_action( 'check_comment_flood', 'check_comment_flood_db', 10, 4 );
+		\remove_filter( 'wp_kses_allowed_html', $kses_callback );
+		\remove_filter( 'akismet_comment_nonce', $akismet_callback );
 
-		if ( 1 === $state ) {
-			return $comment_data;
-		} else {
-			return $state; // Either WP_Comment, false, a WP_Error, 0, or 1!
+		if ( false !== $flood_priority ) {
+			\add_action( 'check_comment_flood', 'check_comment_flood_db', $flood_priority, 4 );
 		}
+
+		if ( ! $is_insert && 1 === $state ) {
+			return $comment_data;
+		}
+
+		return $state; // Either a comment ID, false, a WP_Error, or 0.
+	}
+
+	/**
+	 * Get interaction counts grouped by comment type.
+	 *
+	 * Results are cached against WordPress's comment cache generation so inserts,
+	 * updates, deletions, and comment meta changes invalidate them automatically.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @param int $post_id The post ID.
+	 *
+	 * @return array<string, int> Counts keyed by comment type.
+	 */
+	public static function get_counts( $post_id ) {
+		$post_id      = \absint( $post_id );
+		$last_changed = \wp_cache_get_last_changed( 'comment' );
+		$cache_key    = "interaction_counts_{$post_id}:{$last_changed}";
+		$counts       = \wp_cache_get( $cache_key, 'activitypub' );
+
+		if ( false !== $counts ) {
+			return $counts;
+		}
+
+		global $wpdb;
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Cached against the core comment cache generation.
+		$results = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT comment_type, COUNT(*) AS total
+				FROM {$wpdb->comments}
+				WHERE comment_post_ID = %d
+				AND comment_approved = '1'
+				GROUP BY comment_type",
+				$post_id
+			),
+			ARRAY_A
+		);
+
+		$counts = array();
+		foreach ( $results as $result ) {
+			$counts[ $result['comment_type'] ] = (int) $result['total'];
+		}
+
+		\wp_cache_set( $cache_key, $counts, 'activitypub' );
+
+		return $counts;
 	}
 
 	/**
@@ -561,16 +700,10 @@ class Interactions {
 	 * @return int The total number of interactions.
 	 */
 	public static function count_by_type( $post_id, $type ) {
-		return \get_comments(
-			array(
-				'post_id' => $post_id,
-				'status'  => 'approve',
-				'type'    => $type,
-				'count'   => true,
-				'paging'  => false,
-				'fields'  => 'ids',
-			)
-		);
+		$counts = self::get_counts( $post_id );
+		$type   = \sanitize_key( $type );
+
+		return $counts[ $type ] ?? 0;
 	}
 
 	/**
@@ -583,22 +716,6 @@ class Interactions {
 	 * @return string|false The quote URL or false if not found.
 	 */
 	public static function get_quote_url( $activity ) {
-		if ( ! empty( $activity['object']['quote'] ) ) {
-			return object_to_uri( $activity['object']['quote'] );
-		}
-
-		if ( ! empty( $activity['object']['quoteUrl'] ) ) {
-			return object_to_uri( $activity['object']['quoteUrl'] );
-		}
-
-		if ( ! empty( $activity['object']['quoteUri'] ) ) {
-			return object_to_uri( $activity['object']['quoteUri'] );
-		}
-
-		if ( ! empty( $activity['object']['_misskey_quote'] ) ) {
-			return object_to_uri( $activity['object']['_misskey_quote'] );
-		}
-
-		return false;
+		return get_quote_url( $activity );
 	}
 }

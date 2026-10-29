@@ -13,7 +13,7 @@ use Activitypub\Collection\Extra_Fields;
 use Activitypub\Collection\Followers;
 use Activitypub\Collection\Remote_Actors;
 use Activitypub\Http;
-use Activitypub\Mention;
+use Activitypub\Proxy;
 use Activitypub\Transformer\Factory;
 use Activitypub\Webfinger as Webfinger_Util;
 use Enable_Mastodon_Apps\Entity\Account;
@@ -41,6 +41,8 @@ class Enable_Mastodon_Apps {
 
 	/**
 	 * Initialize the class, registering WordPress hooks.
+	 *
+	 * @return void
 	 */
 	public static function init() {
 		\add_filter( 'mastodon_api_valid_user', array( self::class, 'is_ap_actor' ), 10, 2 );
@@ -55,9 +57,35 @@ class Enable_Mastodon_Apps {
 		\add_filter( 'mastodon_api_status_by_url', array( self::class, 'api_status_by_url' ), 10, 2 );
 		\add_filter( 'mastodon_api_status_context', array( self::class, 'api_get_replies' ), 10, 3 );
 		\add_filter( 'mastodon_api_update_credentials', array( self::class, 'api_update_credentials' ), 10, 2 );
-		\add_filter( 'mastodon_api_submit_status_text', array( Mention::class, 'the_content' ) );
 		\add_filter( 'mastodon_api_notifications_get', array( self::class, 'api_notifications_get' ), 10, 5 );
 		\add_filter( 'mastodon_api_tag_timeline', array( self::class, 'api_tag_timeline_tags_pub' ), 20, 2 );
+		\add_filter( 'activitypub_locale', array( self::class, 'get_post_locale' ), 9, 2 );
+	}
+
+	/**
+	 * Use the language a Mastodon app set for a post as the locale of the ActivityPub object.
+	 *
+	 * Enable Mastodon Apps stores the language an app submits with a status as post meta.
+	 * Runs before the multilingual integrations, so a language those know takes precedence.
+	 * A comment takes the language of the post it belongs to.
+	 *
+	 * @param string $lang The language code.
+	 * @param mixed  $item The transformed object.
+	 *
+	 * @return string The language code.
+	 */
+	public static function get_post_locale( $lang, $item ) {
+		if ( $item instanceof \WP_Comment ) {
+			$item = \get_post( $item->comment_post_ID );
+		}
+
+		if ( ! $item instanceof \WP_Post ) {
+			return $lang;
+		}
+
+		$app_lang = \get_post_meta( $item->ID, 'ema_language', true );
+
+		return $app_lang ? $app_lang : $lang;
 	}
 
 	/**
@@ -150,6 +178,8 @@ class Enable_Mastodon_Apps {
 	 *
 	 * @param int   $user_id The user id to act on.
 	 * @param array $fields The fields to set. It is assumed to be the entire set of desired fields.
+	 *
+	 * @return void
 	 */
 	private static function set_extra_fields( $user_id, $fields ) {
 		// The Mastodon API submits a simple hash for every field.
@@ -290,8 +320,8 @@ class Enable_Mastodon_Apps {
 	/**
 	 * Resolve internal accounts for Mastodon API
 	 *
-	 * @param Account $user_data The user data.
-	 * @param string  $user_id   The user id.
+	 * @param Account|null $user_data The user data.
+	 * @param string       $user_id   The user id.
 	 *
 	 * @return Account The filtered Account.
 	 */
@@ -328,13 +358,17 @@ class Enable_Mastodon_Apps {
 
 		$post_types = \get_option( 'activitypub_support_post_types', array( 'post' ) );
 		$query_args = array(
-			'post_type'      => $post_types,
-			'posts_per_page' => 1,
+			'post_type'        => $post_types,
+			'posts_per_page'   => 1,
+			'post_status'      => 'publish',
+			'suppress_filters' => true,
 		);
 		if ( $user_id > 0 ) {
 			$query_args['author'] = $user_id;
 		}
-		$posts                   = \get_posts( $query_args );
+		$query                   = new \WP_Query( $query_args );
+		$posts                   = $query->posts;
+		$account->statuses_count = (int) $query->found_posts;
 		$account->last_status_at = ! empty( $posts ) ? new \DateTime( $posts[0]->post_date_gmt ) : $account->created_at;
 
 		$account->fields = self::get_extra_fields( $user_id_to_use );
@@ -498,7 +532,7 @@ class Enable_Mastodon_Apps {
 			return $status;
 		}
 
-		$object = Http::get_remote_object( $url, true );
+		$object = Proxy::get( $url );
 		if ( \is_wp_error( $object ) || ! isset( $object['attributedTo'] ) ) {
 			return null;
 		}
@@ -693,7 +727,7 @@ class Enable_Mastodon_Apps {
 			return $statuses;
 		}
 
-		$outbox = Http::get_remote_object( $data['outbox'], true );
+		$outbox = Proxy::get( $data['outbox'] );
 		if ( \is_wp_error( $outbox ) || ! isset( $outbox['first'] ) ) {
 			return $statuses;
 		}
@@ -717,7 +751,7 @@ class Enable_Mastodon_Apps {
 				break;
 			}
 
-			$posts = Http::get_remote_object( $url, true );
+			$posts = Proxy::get( $url );
 			if ( \is_wp_error( $posts ) ) {
 				return $statuses;
 			}
@@ -871,13 +905,13 @@ class Enable_Mastodon_Apps {
 		 */
 		$base_url   = \apply_filters( 'activitypub_tags_pub_base_url', 'https://tags.pub' );
 		$outbox_url = \trailingslashit( $base_url ) . 'user/' . \rawurlencode( $hashtag ) . '/outbox';
-		$outbox     = Http::get_remote_object( $outbox_url, true );
+		$outbox     = Proxy::get( $outbox_url );
 
 		if ( \is_wp_error( $outbox ) || empty( $outbox['first'] ) ) {
 			return array();
 		}
 
-		$page = Http::get_remote_object( $outbox['first'], true );
+		$page = Proxy::get( $outbox['first'] );
 		if ( \is_wp_error( $page ) ) {
 			return array();
 		}
@@ -909,7 +943,7 @@ class Enable_Mastodon_Apps {
 	private static function resolve_tags_pub_item( $item ) {
 		// Resolve item to an activity object.
 		if ( \is_string( $item ) ) {
-			$activity = Http::get_remote_object( $item, true );
+			$activity = Proxy::get( $item );
 			if ( \is_wp_error( $activity ) ) {
 				return null;
 			}
@@ -930,7 +964,7 @@ class Enable_Mastodon_Apps {
 			return null;
 		}
 
-		$object = Http::get_remote_object( $object_url, true );
+		$object = Proxy::get( $object_url );
 		if ( \is_wp_error( $object ) ) {
 			return null;
 		}
@@ -956,7 +990,7 @@ class Enable_Mastodon_Apps {
 	 * @return array The filtered context.
 	 */
 	public static function api_get_replies( $context, $post_id, $url ) {
-		$meta = Http::get_remote_object( $url, true );
+		$meta = Proxy::get( $url );
 		if ( \is_wp_error( $meta ) || ! isset( $meta['replies']['first']['next'] ) ) {
 			return $context;
 		}
@@ -965,7 +999,7 @@ class Enable_Mastodon_Apps {
 			$replies = $meta['replies']['first'];
 		} elseif ( isset( $meta['replies']['first']['next'] ) ) {
 			$replies_url = $meta['replies']['first']['next'];
-			$replies     = Http::get_remote_object( $replies_url, true );
+			$replies     = Proxy::get( $replies_url );
 			if ( \is_wp_error( $replies ) || ! isset( $replies['items'] ) ) {
 				return $context;
 			}
@@ -1079,7 +1113,7 @@ class Enable_Mastodon_Apps {
 					continue;
 				}
 
-				$status = self::api_post_status( $comment->comment_post_ID );
+				$status = self::api_post_status( (int) $comment->comment_post_ID );
 				if ( ! $status ) {
 					continue;
 				}

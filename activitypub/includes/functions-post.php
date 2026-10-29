@@ -320,7 +320,11 @@ function get_enclosures( $post_id ) {
 		$enclosures
 	);
 
-	return \array_filter( $enclosures );
+	/*
+	 * Re-indexed on the URL to drop duplicates: a file declared twice is still one file, and the
+	 * URL is the only identity an enclosure has unless it happens to be in the media library.
+	 */
+	return \array_values( \array_column( \array_filter( $enclosures ), null, 'url' ) );
 }
 
 /**
@@ -330,8 +334,7 @@ function get_enclosures( $post_id ) {
  *
  * @param int|\WP_Post $post   The post ID or post object.
  * @param integer      $length The maximum length of the summary.
- *                             Default is 500. It will be ignored if the post excerpt
- *                             and the content above the <!--more--> tag.
+ *                             Default is 500. It is ignored for a manual excerpt.
  *
  * @return string The generated post summary.
  */
@@ -350,43 +353,64 @@ function generate_post_summary( $post, $length = 500 ) {
 	$excerpt_more = \apply_filters( 'activitypub_excerpt_more', '[…]' );
 	$length       = $length - \mb_strlen( $excerpt_more, 'UTF-8' );
 
-	$content = \sanitize_post_field( 'post_excerpt', $post->post_excerpt, $post->ID );
+	/*
+	 * Let core build the excerpt. It runs the content filters, so the summary never shows what
+	 * they hide, and plugins can tell an excerpt from the full post. Core's word limit is lifted,
+	 * so the length below applies and no theme read-more link is added.
+	 */
+	$no_limit = static function () {
+		return \PHP_INT_MAX - 1; // `wp_trim_words()` adds one.
+	};
 
-	if ( $content ) {
-		// Ignore length if excerpt is set.
-		$length = null;
-	} else {
-		$content       = \sanitize_post_field( 'post_content', $post->post_content, $post->ID );
-		$content_parts = \get_extended( $content );
+	// Core drops these blocks from excerpts, but the text inside them belongs to the summary.
+	$containers = static function ( $blocks ) {
+		return \array_merge( $blocks, array( 'core/cover' ) );
+	};
 
-		// Check for the <!--more--> tag.
-		if (
-			! empty( $content_parts['extended'] ) &&
-			! empty( $content_parts['main'] )
-		) {
-			$content = \trim( $content_parts['main'] ) . ' ' . $excerpt_more;
-			$length  = null;
-		}
+	// A Details block is rendered whole, a wrapper would lose its title.
+	$details = static function ( $blocks ) {
+		return \array_merge( $blocks, array( 'core/details' ) );
+	};
+
+	/*
+	 * Core ignores the more tag on the post's own permalink, where remote servers fetch the object
+	 * and the preview renders, so the summary would not match the one sent in the Create. Core gets
+	 * a copy cut at the tag instead. `get_post()` reloads a post that is not raw from the database,
+	 * which would drop the cut.
+	 */
+	$teaser               = clone $post;
+	$teaser->post_content = \get_extended( $post->post_content )['main'];
+	$teaser->filter       = 'raw';
+
+	$previous_post   = $GLOBALS['post'] ?? null;
+	$GLOBALS['post'] = $post; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+	\setup_postdata( $post );
+	\add_filter( 'excerpt_length', $no_limit, \PHP_INT_MAX );
+	\add_filter( 'excerpt_allowed_wrapper_blocks', $containers );
+	\add_filter( 'excerpt_allowed_blocks', $details );
+
+	$content = \get_the_excerpt( $teaser );
+
+	\remove_filter( 'excerpt_allowed_blocks', $details );
+	\remove_filter( 'excerpt_allowed_wrapper_blocks', $containers );
+	\remove_filter( 'excerpt_length', $no_limit, \PHP_INT_MAX );
+
+	// `wp_reset_postdata()` would restore the main query's post, not the one set before.
+	$GLOBALS['post'] = $previous_post; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited
+	if ( $previous_post ) {
+		\setup_postdata( $previous_post );
 	}
 
-	$content = \strip_shortcodes( $content );
-	$content = \wp_strip_all_tags( $content );
-	$content = \html_entity_decode( $content, ENT_QUOTES, 'UTF-8' );
-	$content = \trim( $content );
-	$content = \preg_replace( '/\R+/mu', "\n\n", $content );
-	$content = \preg_replace( '/[\r\t]/u', '', $content );
+	// Mastodon shows the summary as plain text. Core strips shortcodes only from generated excerpts.
+	$content = \html_entity_decode( \wp_strip_all_tags( \strip_shortcodes( $content ) ), ENT_QUOTES, 'UTF-8' );
 
-	if ( $length && \mb_strlen( $content, 'UTF-8' ) > $length ) {
+	// A manual excerpt is used as written. Core treats one with only whitespace as empty.
+	if ( '' === \trim( $post->post_excerpt ) && $length && \mb_strlen( $content, 'UTF-8' ) > $length ) {
 		$content = \wordwrap( $content, $length, '</activitypub-summary>' );
 		$content = \explode( '</activitypub-summary>', $content, 2 );
 		$content = $content[0] . ' ' . $excerpt_more;
 	}
 
-	/*
-	There is no proper support for HTML in ActivityPub summaries yet.
-	// This filter is documented in wp-includes/post-template.php.
-	return \apply_filters( 'the_excerpt', $content );
-	*/
 	return $content;
 }
 
@@ -427,13 +451,51 @@ function get_post_id( $id ) {
 		return \add_query_arg( 'p', $post_id, \home_url( '/' ) );
 	}
 
-	return \get_permalink( $post_id );
+	$post = \get_post( $post_id );
+
+	return $post ? get_post_url( $post ) : \get_permalink( $post_id );
+}
+
+/**
+ * Get the post URL, preserving its published permalink after withdrawal.
+ *
+ * @since 9.4.0
+ *
+ * @param \WP_Post $post The post.
+ *
+ * @return string The post URL.
+ */
+function get_post_url( $post ) {
+	$canonical_url = \get_post_meta( $post->ID, '_activitypub_canonical_url', true );
+
+	if ( $canonical_url && 'attachment' !== $post->post_type ) {
+		return \esc_url_raw( $canonical_url );
+	}
+
+	switch ( \get_post_status( $post ) ) {
+		case 'trash':
+			$permalink = $canonical_url;
+			break;
+		case 'draft':
+			// Get_sample_permalink is in wp-admin, not always loaded.
+			if ( ! \function_exists( '\get_sample_permalink' ) ) {
+				require_once ABSPATH . 'wp-admin/includes/post.php';
+			}
+			$sample    = \get_sample_permalink( $post->ID );
+			$permalink = \str_replace( array( '%pagename%', '%postname%' ), $sample[1], $sample[0] );
+			break;
+		default:
+			$permalink = \get_permalink( $post );
+			break;
+	}
+
+	return \esc_url_raw( $permalink );
 }
 
 /**
  * Get the visibility of a post.
  *
- * @param int $post_id The post ID.
+ * @param int|\WP_Post $post_id The post ID or object.
  *
  * @return string|false The visibility of the post or false if not found.
  */
@@ -466,4 +528,97 @@ function get_content_visibility( $post_id ) {
 	 * @param \WP_Post $post        The post object.
 	 */
 	return \apply_filters( 'activitypub_content_visibility', $_visibility, $post );
+}
+
+/**
+ * Get the quote intent URI as a JavaScript URI.
+ *
+ * @since 9.4.0
+ *
+ * @return string The quote intent URI.
+ */
+function get_quote_intent_js() {
+	return \sprintf(
+		'javascript:(()=>{window.open(\'%s\'+encodeURIComponent(window.location.href));})();',
+		get_quote_intent_url()
+	);
+}
+
+/**
+ * Get the quote intent URI.
+ *
+ * @since 9.4.0
+ *
+ * @return string The quote intent URI.
+ */
+function get_quote_intent_url() {
+	/**
+	 * Filters the quote intent parameters.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @param array $params The quote intent parameters.
+	 */
+	$params = \apply_filters( 'activitypub_quote_intent_params', array() );
+
+	$params += array( 'quotation_of' => '' );
+	$query   = \http_build_query( $params );
+	$path    = 'post-new.php?' . $query;
+	$url     = \admin_url( $path );
+
+	/**
+	 * Filters the quote intent URL.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @param string $url The quote intent URL.
+	 */
+	$url = \apply_filters( 'activitypub_quote_intent_url', $url );
+
+	return \esc_url_raw( $url );
+}
+
+/**
+ * Get the post an interaction with a URL lands on.
+ *
+ * The URL is a local post, a stored remote post, or a comment, in which case the comment's post.
+ * Storing an interaction and checking blocks on it both resolve it here, so they agree.
+ *
+ * @since 9.4.0
+ *
+ * @param string   $url               The target URL.
+ * @param int|null $parent_comment_id Optional. The comment the URL resolved to, see url_to_commentid().
+ *
+ * @return int The post ID, or 0 when the target is unknown.
+ */
+function get_target_post_id( $url, $parent_comment_id = 0 ) {
+	if ( ! $url ) {
+		return 0;
+	}
+
+	// A comment's URL leads to its post, and core's url_to_postid() would read `/?c=5` as the front page.
+	$parent_comment = $parent_comment_id ? \get_comment( $parent_comment_id ) : null;
+	if ( $parent_comment instanceof \WP_Comment ) {
+		return (int) $parent_comment->comment_post_ID;
+	}
+
+	$url = \esc_url_raw( $url );
+
+	$post_id = \url_to_postid( $url );
+
+	// url_to_postid() drops query arguments it does not know, so `/?author=5` reads as the static front page.
+	$query = array();
+	\wp_parse_str( (string) \wp_parse_url( $url, PHP_URL_QUERY ), $query );
+	if ( $post_id && (int) \get_option( 'page_on_front' ) === $post_id && $query && ! \array_intersect( \array_keys( $query ), array( 'p', 'page_id' ) ) ) {
+		$post_id = 0;
+	}
+
+	if ( ! $post_id ) {
+		$remote_post = Remote_Posts::get_by_guid( $url );
+		if ( $remote_post instanceof \WP_Post ) {
+			$post_id = $remote_post->ID;
+		}
+	}
+
+	return (int) $post_id;
 }

@@ -11,7 +11,7 @@
 namespace Activitypub\Scheduler;
 
 use Activitypub\Collection\Following;
-use Activitypub\Http;
+use Activitypub\Proxy;
 
 use function Activitypub\get_url_authority;
 
@@ -21,6 +21,8 @@ use function Activitypub\get_url_authority;
 class Collection_Sync {
 	/**
 	 * Initialize the scheduler.
+	 *
+	 * @return void
 	 */
 	public static function init() {
 		\add_action( 'activitypub_collection_sync', array( self::class, 'schedule_reconciliation' ), 10, 4 );
@@ -34,6 +36,8 @@ class Collection_Sync {
 	 * @param int    $user_id   The local user ID.
 	 * @param string $actor_url The remote actor URL.
 	 * @param array  $params    The Collection-Synchronization header parameters.
+	 *
+	 * @return void
 	 */
 	public static function schedule_reconciliation( $type, $user_id, $actor_url, $params ) {
 		// Schedule async processing to avoid blocking the inbox.
@@ -50,6 +54,8 @@ class Collection_Sync {
 	 * @param int    $user_id   The local user ID.
 	 * @param string $actor_url The remote actor URL.
 	 * @param array  $params    The Collection-Synchronization header parameters.
+	 *
+	 * @return void
 	 */
 	public static function reconcile_followers( $user_id, $actor_url, $params ) {
 		if ( empty( $params['url'] ) ) {
@@ -57,7 +63,7 @@ class Collection_Sync {
 		}
 
 		// Fetch the authoritative partial followers collection.
-		$data = Http::get_remote_object( $params['url'], 5 * MINUTE_IN_SECONDS );
+		$data = Proxy::get( $params['url'], array( 'ttl' => 5 * MINUTE_IN_SECONDS ) );
 
 		if ( \is_wp_error( $data ) || ! isset( $data['orderedItems'] ) || ! \is_array( $data['orderedItems'] ) ) {
 			return;

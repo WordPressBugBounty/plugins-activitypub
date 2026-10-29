@@ -9,6 +9,9 @@
 
 namespace Activitypub;
 
+use WpOrg\Requests\Exception as Requests_Exception;
+use WpOrg\Requests\IdnaEncoder;
+
 /**
  * Get the REST URL relative to this plugin's namespace.
  *
@@ -51,11 +54,68 @@ function normalize_host( $host ) {
 }
 
 /**
+ * Convert a host to its ASCII form.
+ *
+ * An internationalized host is converted to its IDNA A-label (`café.example` becomes
+ * `xn--caf-dma.example`), which is the form `acct:` URIs and DNS use. ASCII hosts, IPv6
+ * literals included, are returned as they are.
+ *
+ * @since 9.4.0
+ *
+ * @param string $host The host.
+ *
+ * @return string The host in ASCII form, or the host as it is if it cannot be converted.
+ */
+function to_ascii_host( $host ) {
+	$host = (string) $host;
+
+	if ( ! \preg_match( '/[^\x00-\x7F]/', $host ) ) {
+		return $host;
+	}
+
+	// UTS #46 maps equivalent spellings (case, width, decomposed accents) to the same A-label.
+	if ( \function_exists( 'idn_to_ascii' ) ) {
+		$ascii = \idn_to_ascii( $host, \IDNA_NONTRANSITIONAL_TO_ASCII, \INTL_IDNA_VARIANT_UTS46 );
+
+		/*
+		 * UTS #46 also maps characters away (soft hyphen, fullwidth Latin), which turns a label
+		 * into a plain ASCII name that WordPress would not connect to. A label with non-ASCII
+		 * characters has to stay an A-label, or the host is returned as it is.
+		 */
+		$labels = \preg_split( '/[.\x{3002}\x{FF0E}\x{FF61}]/u', $host );
+		if ( ! $ascii || ! $labels || \count( $labels ) !== \substr_count( $ascii, '.' ) + 1 ) {
+			return $host;
+		}
+
+		$ascii_labels = \explode( '.', $ascii );
+		foreach ( $labels as $i => $label ) {
+			if ( \preg_match( '/[^\x00-\x7F]/', $label ) && 0 !== \stripos( $ascii_labels[ $i ], 'xn--' ) ) {
+				return $host;
+			}
+		}
+
+		return $ascii;
+	}
+
+	// Without intl only case is folded: decomposed accents, fullwidth letters and dots like `。` give a different A-label.
+	if ( \function_exists( 'mb_strtolower' ) ) {
+		$host = \mb_strtolower( $host, 'UTF-8' );
+	}
+
+	try {
+		return \strtolower( IdnaEncoder::encode( $host ) );
+	} catch ( Requests_Exception $e ) {
+		return $host;
+	}
+}
+
+/**
  * Fold a host to its canonical spelling for comparison.
  *
  * Hosts are case-insensitive, IPv6 literals are bracketed in a URI but not in a stored host,
- * and a trailing dot is the same fully qualified name. Two spellings that differ only in those
- * ways address the same host, so anything comparing hosts has to fold them first.
+ * a trailing dot is the same fully qualified name, and an internationalized host is the same as
+ * its A-label. Two spellings that differ only in those ways address the same host, so anything
+ * comparing hosts has to fold them first.
  *
  * Unlike {@see normalize_host()} this is lossless: it does not strip `www.`, which is a
  * different host rather than a different spelling of one.
@@ -67,7 +127,8 @@ function normalize_host( $host ) {
  * @return string The folded host.
  */
 function fold_host( $host ) {
-	return \rtrim( \trim( \strtolower( (string) $host ), '[]' ), '.' );
+	// Trimmed again after the conversion, which maps dots like `。` to `.` when the intl extension is available.
+	return \rtrim( to_ascii_host( \rtrim( \trim( \strtolower( (string) $host ), '[]' ), '.' ) ), '.' );
 }
 
 /**
@@ -90,6 +151,114 @@ function fold_authority( $authority ) {
 	$host = \wp_parse_url( '//' . \ltrim( (string) $authority, '/' ), \PHP_URL_HOST );
 
 	return fold_host( (string) $host );
+}
+
+/**
+ * Check if an authority names a host a signature may be made out to.
+ *
+ * A signature is bound to the host it was made out to, and the verifiers read that host from the
+ * request. Only a host this site answers on may enter a signature base, or a signature made out
+ * to another server would verify here when it is replayed to the same path with that server's name.
+ *
+ * @since 9.4.0
+ *
+ * @param string $authority A host, optionally bracketed and optionally with a port.
+ *
+ * @return bool True if the authority names one of this site's hosts, false otherwise.
+ */
+function is_signature_host( $authority ) {
+	// The raw value enters the signature base, so it has to be a bare host and port, written exactly so.
+	if ( get_authority( \sprintf( '//%s', $authority ) ) !== (string) $authority ) {
+		return false;
+	}
+
+	$authority = fold_authority( $authority );
+
+	// A host of only dots or brackets folds to nothing and must not match an unparseable entry.
+	if ( '' === $authority ) {
+		return false;
+	}
+
+	/**
+	 * Filters the hosts a signature may legitimately have been made out to.
+	 *
+	 * Sites reached under a name other than `home_url()`, for example behind a proxy, add it
+	 * here. Write them the way they appear in a URL; they are folded before they are compared.
+	 *
+	 * @since 9.3.1
+	 *
+	 * @param string[] $hosts Hosts this site answers on.
+	 */
+	$hosts = \apply_filters( 'activitypub_signature_original_hosts', array( home_host() ) );
+
+	// Cast because a callback returning one host outside an array would otherwise be a fatal rather than a non-match.
+	foreach ( (array) $hosts as $host ) {
+		if ( fold_authority( $host ) === $authority ) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Get the authority of a URL the way an HTTP client sends it in `Host`.
+ *
+ * The host, plus the port whenever it is not the scheme's default, as RFC 9110 defines `Host`
+ * and as WordPress' HTTP transports send it. A signature over the host has to name this value,
+ * or a server on a non-default port cannot verify it.
+ *
+ * @since 9.4.0
+ *
+ * @param string $url The URL.
+ *
+ * @return string The authority, or an empty string when the URL has no host.
+ */
+function get_authority( $url ) {
+	$parts = \wp_parse_url( $url );
+
+	if ( empty( $parts['host'] ) ) {
+		return '';
+	}
+
+	static $default = array(
+		'http'  => 80,
+		'https' => 443,
+	);
+
+	$scheme = \strtolower( $parts['scheme'] ?? '' );
+
+	if ( isset( $parts['port'] ) && ( $default[ $scheme ] ?? null ) !== (int) $parts['port'] ) {
+		return $parts['host'] . ':' . (int) $parts['port'];
+	}
+
+	return $parts['host'];
+}
+
+/**
+ * Check if a host is this site's host or the host it moved from.
+ *
+ * Both sides are folded before they are compared: the host is whatever a caller sent, and the stored
+ * ones are whatever an admin entered. A host of `.` or `[]` folds away to nothing and is dropped, so
+ * it never matches an unset old host.
+ *
+ * @since 9.4.0
+ *
+ * @param string|null $host The host.
+ *
+ * @return bool True if the host is local, false otherwise.
+ */
+function is_local_host( $host ) {
+	$local = \array_filter(
+		\array_map(
+			function ( $local_host ) {
+				return normalize_host( fold_host( $local_host ) );
+			},
+			array( home_host(), \get_option( 'activitypub_old_host' ) )
+		)
+	);
+
+	return \in_array( normalize_host( fold_host( $host ) ), $local, true );
 }
 
 /**

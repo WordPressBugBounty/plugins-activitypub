@@ -13,8 +13,8 @@ use Activitypub\Model\Blog;
 use Activitypub\Model\User;
 use Activitypub\Signature;
 
+use function Activitypub\is_local_host;
 use function Activitypub\is_user_type_disabled;
-use function Activitypub\normalize_host;
 use function Activitypub\normalize_url;
 use function Activitypub\object_to_uri;
 use function Activitypub\url_to_authorid;
@@ -47,7 +47,7 @@ class Actors {
 	 *
 	 * @param int $user_id The user ID.
 	 *
-	 * @return Actor|User|Blog|Application|\WP_Error Actor object or WP_Error if not found or not permitted.
+	 * @return User|Blog|\WP_Error Actor object or WP_Error if not found or not permitted.
 	 */
 	public static function get_by_id( $user_id ) {
 		if ( \is_numeric( $user_id ) ) {
@@ -235,21 +235,21 @@ class Actors {
 			);
 		}
 
-		$scheme = 'acct';
-		$match  = array();
-		// Try to extract the scheme and the host.
-		if ( \preg_match( '/^([a-zA-Z^:]+):(.*)$/i', $uri, $match ) ) {
-			// Extract the scheme.
-			$scheme = \esc_attr( $match[1] );
-		}
-
-		// @todo: handle old domain URIs here before we serve a new domain below when we shouldn't.
-		// Although maybe passing through to ::get_by_username() is enough?
+		// Extract the scheme, defaulting to `acct` for bare `user@host` handles.
+		$scheme = \wp_parse_url( $uri, PHP_URL_SCHEME ) ?: 'acct';
 
 		switch ( $scheme ) {
 			// Check for http(s) URIs.
 			case 'http':
 			case 'https':
+				if ( ! is_local_host( \wp_parse_url( $uri, \PHP_URL_HOST ) ) ) {
+					return new \WP_Error(
+						'activitypub_no_user_found',
+						\__( 'Actor not found', 'activitypub' ),
+						array( 'status' => 404 )
+					);
+				}
+
 				// Check for http(s)://blog.example.com/@username.
 				$resource_path = \wp_parse_url( $uri, PHP_URL_PATH );
 
@@ -280,10 +280,7 @@ class Actors {
 				// Check for http(s)://blog.example.com/.
 				$normalized_uri = normalize_url( $uri );
 
-				if (
-					normalize_url( \site_url() ) === $normalized_uri ||
-					normalize_url( \home_url() ) === $normalized_uri
-				) {
+				if ( normalize_url( \home_url() ) === $normalized_uri ) {
 					return self::BLOG_USER_ID;
 				}
 
@@ -296,10 +293,8 @@ class Actors {
 			case 'acct':
 				$uri        = \str_replace( 'acct:', '', $uri );
 				$identifier = \substr( $uri, 0, \strrpos( $uri, '@' ) );
-				$host       = normalize_host( \substr( \strrchr( $uri, '@' ), 1 ) );
-				$blog_host  = normalize_host( \wp_parse_url( \home_url( '/' ), \PHP_URL_HOST ) );
 
-				if ( $blog_host !== $host && normalize_host( \get_option( 'activitypub_old_host' ) ) !== $host ) {
+				if ( ! is_local_host( \substr( (string) \strrchr( $uri, '@' ), 1 ) ) ) {
 					return new \WP_Error(
 						'activitypub_wrong_host',
 						\__( 'Resource host does not match blog host', 'activitypub' ),
@@ -308,11 +303,19 @@ class Actors {
 				}
 
 				// Prepare wildcards https://github.com/mastodon/mastodon/issues/22213.
-				if ( \in_array( $identifier, array( '_', '*', '' ), true ) ) {
+				$username = \rawurldecode( $identifier );
+
+				if ( \in_array( $username, array( '_', '*', '' ), true ) ) {
 					return self::BLOG_USER_ID;
 				}
 
-				return self::get_id_by_username( $identifier );
+				// Older blog identifiers were stored percent-encoded; clients send any hex case or no encoding.
+				$blog_identifier = \get_option( 'activitypub_blog_identifier' );
+				if ( \is_string( $blog_identifier ) && \rawurldecode( $blog_identifier ) === $username ) {
+					$username = $blog_identifier;
+				}
+
+				return self::get_id_by_username( $username );
 			default:
 				return new \WP_Error(
 					'activitypub_wrong_scheme',

@@ -8,6 +8,7 @@
 namespace Activitypub;
 
 use Activitypub\Cache\Avatar;
+use Activitypub\Cache\Comment_Media;
 use Activitypub\Cache\Emoji;
 use Activitypub\Cache\Media;
 
@@ -26,8 +27,13 @@ use Activitypub\Cache\Media;
 class Cache {
 	/**
 	 * Initialize the class, registering WordPress hooks.
+	 *
+	 * @return void
 	 */
 	public static function init() {
+		// Cached comment images go with their comment, also after caching was turned off.
+		Comment_Media::register_cleanup();
+
 		if ( ! self::is_enabled() ) {
 			return;
 		}
@@ -73,10 +79,13 @@ class Cache {
 
 	/**
 	 * Register all cache handlers.
+	 *
+	 * @return void
 	 */
 	public static function register_caches() {
 		Avatar::init();
 		Media::init();
+		Comment_Media::init();
 		Emoji::init();
 
 		/**

@@ -174,20 +174,47 @@ function is_quote_activity( $data ) {
 }
 
 /**
+ * Get the URL a quote activity quotes.
+ *
+ * Checks the quote properties in priority order: quote, quoteUrl, quoteUri, _misskey_quote.
+ *
+ * @since 9.4.0
+ *
+ * @param array $activity The activity array.
+ *
+ * @return string|false The quote URL or false if not found.
+ */
+function get_quote_url( $activity ) {
+	foreach ( array( 'quote', 'quoteUrl', 'quoteUri', '_misskey_quote' ) as $key ) {
+		if ( ! empty( $activity['object'][ $key ] ) ) {
+			return object_to_uri( $activity['object'][ $key ] );
+		}
+	}
+
+	return false;
+}
+
+/**
  * Get the URI of an ActivityPub object.
  *
- * @param array|string $data The ActivityPub object.
+ * @param mixed $data The ActivityPub object.
  *
  * @return string|null The URI of the ActivityPub object.
  */
 function object_to_uri( $data ) {
 	// Check whether it is already simple.
-	if ( ! $data || \is_string( $data ) ) {
+	if ( \is_string( $data ) ) {
 		return $data;
 	}
 
 	if ( \is_object( $data ) ) {
+		if ( ! \is_callable( array( $data, 'to_array' ) ) ) {
+			return null;
+		}
 		$data = $data->to_array();
+	}
+	if ( ! \is_array( $data ) || empty( $data ) ) {
+		return null;
 	}
 
 	/*
@@ -195,12 +222,7 @@ function object_to_uri( $data ) {
 	 * This plugin does not support collections.
 	 */
 	if ( \array_is_list( $data ) ) {
-		$data = $data[0];
-	}
-
-	// Check if it is simplified now.
-	if ( \is_string( $data ) ) {
-		return $data;
+		return object_to_uri( $data[0] );
 	}
 
 	$type = 'Object';
@@ -214,12 +236,12 @@ function object_to_uri( $data ) {
 		case 'Document': // See https://www.w3.org/TR/activitystreams-vocabulary/#dfn-document.
 		case 'Image':    // See https://www.w3.org/TR/activitystreams-vocabulary/#dfn-image.
 		case 'Video':    // See https://www.w3.org/TR/activitystreams-vocabulary/#dfn-video.
-			$data = object_to_uri( $data['url'] );
+			$data = object_to_uri( $data['url'] ?? null );
 			break;
 
 		case 'Link':     // See https://www.w3.org/TR/activitystreams-vocabulary/#dfn-link.
 		case 'Mention':  // See https://www.w3.org/TR/activitystreams-vocabulary/#dfn-mention.
-			$data = $data['href'];
+			$data = $data['href'] ?? null;
 			break;
 
 		case 'FeaturedItem': // See https://github.com/mastodon/featured_collections/pull/1.
@@ -239,7 +261,7 @@ function object_to_uri( $data ) {
 			break;
 	}
 
-	return $data;
+	return \is_string( $data ) ? $data : null;
 }
 
 /**
@@ -327,7 +349,7 @@ function id_matches_url( $item, $url ) {
  *
  * Deliberately not used by `id_matches_url()`, which guards a cache write keyed on the exact
  * id: folding there would confirm a document under one spelling and store it under another.
- * A mismatch there is not a rejection, {@see \Activitypub\Http::get_remote_object()} re-fetches
+ * A mismatch there is not a rejection, {@see \Activitypub\Proxy::get()} re-fetches
  * the declared id and requires that to self-confirm, so the strictness costs one request rather
  * than refusing a document that spells its own host differently.
  *

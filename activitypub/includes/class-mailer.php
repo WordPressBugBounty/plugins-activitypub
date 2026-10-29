@@ -16,6 +16,8 @@ use Activitypub\Comment;
 class Mailer {
 	/**
 	 * Initialize the Mailer.
+	 *
+	 * @return void
 	 */
 	public static function init() {
 		\add_filter( 'comment_notification_subject', array( self::class, 'comment_notification_subject' ), 10, 2 );
@@ -23,8 +25,9 @@ class Mailer {
 
 		\add_action( 'activitypub_handled_follow', array( self::class, 'new_follower' ), 10, 3 );
 
-		\add_action( 'activitypub_inbox_create', array( self::class, 'direct_message' ), 10, 2 );
-		\add_action( 'activitypub_inbox_create', array( self::class, 'mention' ), 20, 2 );  /** After @see \Activitypub\Handler\Create::handle_create() */
+		\add_action( 'activitypub_handled_inbox_create', array( self::class, 'direct_message' ), 10, 2 );
+		// Priority 20 keeps this after @see \Activitypub\Handler\Create::handle_create(), whose comment the reply check reads.
+		\add_action( 'activitypub_handled_inbox_create', array( self::class, 'mention' ), 20, 2 );
 
 		\add_filter( 'notify_post_author', array( self::class, 'maybe_prevent_comment_notification' ), 10, 2 );
 		\add_filter( 'notify_post_author', array( self::class, 'maybe_prevent_reaction_notification' ), 10, 2 );
@@ -126,7 +129,7 @@ class Mailer {
 
 		// For quotes, link to the quoting post itself so the author can review and respond.
 		if ( 'quote' === $comment->comment_type ) {
-			$quote_url = Comment::get_source_url( $comment->comment_ID );
+			$quote_url = Comment::get_source_url( (int) $comment->comment_ID );
 
 			if ( $quote_url ) {
 				/* translators: Quoting post URL. */
@@ -137,7 +140,7 @@ class Mailer {
 		$notify_message .= "\r\n";
 		/* translators: Comment type label */
 		$notify_message .= \sprintf( \esc_html__( 'You can see all %s on this post here:', 'activitypub' ), \esc_html( $comment_type['label'] ) ) . "\r\n";
-		$notify_message .= \get_permalink( $comment->comment_post_ID ) . '#' . \esc_attr( $comment_type['type'] ) . "\r\n\r\n";
+		$notify_message .= \get_permalink( (int) $comment->comment_post_ID ) . '#' . \esc_attr( $comment_type['type'] ) . "\r\n\r\n";
 
 		return $notify_message;
 	}
@@ -148,6 +151,8 @@ class Mailer {
 	 * @param array     $activity The activity object.
 	 * @param int|int[] $user_ids The id(s) of the local blog-user(s).
 	 * @param bool      $success  True on success, false otherwise.
+	 *
+	 * @return void
 	 */
 	public static function new_follower( $activity, $user_ids, $success ) {
 		// Only send notification if the follow was successful.
@@ -244,6 +249,8 @@ class Mailer {
 	 *
 	 * @param array     $activity The activity object.
 	 * @param int|int[] $user_ids The id(s) of the local blog-user(s).
+	 *
+	 * @return void
 	 */
 	public static function direct_message( $activity, $user_ids ) {
 		// Early return if activity is public or has no recipients.
@@ -341,6 +348,8 @@ class Mailer {
 	 *
 	 * @param array     $activity The activity object.
 	 * @param int|int[] $user_ids The id(s) of the local blog-user(s).
+	 *
+	 * @return void
 	 */
 	public static function mention( $activity, $user_ids ) {
 		// Early return if activity has no mentions.
@@ -588,6 +597,6 @@ class Mailer {
 			return $maybe_notify;
 		}
 
-		return (bool) \get_user_option( 'activitypub_mailer_new_reaction', $post->post_author );
+		return (bool) \get_user_option( 'activitypub_mailer_new_reaction', (int) $post->post_author );
 	}
 }

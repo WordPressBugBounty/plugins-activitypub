@@ -18,6 +18,8 @@ use function Activitypub\object_to_uri;
 class Like {
 	/**
 	 * Initialize the class, registering WordPress hooks.
+	 *
+	 * @return void
 	 */
 	public static function init() {
 		\add_action( 'activitypub_inbox_like', array( self::class, 'handle_like' ), 10, 2 );
@@ -29,6 +31,8 @@ class Like {
 	 *
 	 * @param array     $like     The Activity array.
 	 * @param int|int[] $user_ids The user ID(s).
+	 *
+	 * @return void
 	 */
 	public static function handle_like( $like, $user_ids ) {
 		if ( ! Comment::is_comment_type_enabled( 'like' ) ) {
@@ -47,7 +51,7 @@ class Like {
 		 * duplicate check. Match any status, so a like that was marked as spam or trashed
 		 * still counts as seen. See https://github.com/Automattic/wordpress-activitypub/issues/3215.
 		 */
-		$exists = Comment::object_id_to_comment( \esc_url_raw( object_to_uri( $like ) ), array( 'status' => 'any' ) );
+		$exists = Comment::object_id_to_comment( \esc_url_raw( (string) object_to_uri( $like ) ), array( 'status' => 'any' ) );
 		if ( $exists ) {
 			return;
 		}

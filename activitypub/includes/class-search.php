@@ -19,6 +19,8 @@ class Search {
 
 	/**
 	 * Initialize the search enhancement.
+	 *
+	 * @return void
 	 */
 	public static function init() {
 		\add_filter( 'pre_get_posts', array( self::class, 'enhance_public_search' ) );
@@ -56,8 +58,13 @@ class Search {
 		$imported = self::try_import_activitypub_object( $search_term );
 
 		if ( $imported ) {
-			// Ensure the imported comment is approved/published.
-			\wp_set_comment_status( $imported, 'approve' );
+			// The comment keeps the status moderation gave it; a search must not approve it.
+			if ( '1' !== \get_comment( $imported )->comment_approved && \current_user_can( 'moderate_comments' ) ) {
+				// Admin::edit_comment() sends received replies on to their moderation view.
+				\wp_safe_redirect( \admin_url( 'comment.php?action=editcomment&c=' . $imported ) );
+				exit;
+			}
+
 			$comment_link   = \get_comment_link( $imported );
 			$validated_link = \wp_validate_redirect( $comment_link, \home_url() );
 			if ( $validated_link ) {
@@ -73,6 +80,8 @@ class Search {
 	/**
 	 * Handle admin comment search to check for URLs and ActivityPub objects.
 	 * Runs on admin_init to avoid infinite loops.
+	 *
+	 * @return void
 	 */
 	public static function enhance_admin_comment_search() {
 		// Check user capabilities.
@@ -95,8 +104,13 @@ class Search {
 		$imported = self::try_import_activitypub_object( $search_term );
 
 		if ( $imported ) {
-			// Ensure the imported comment is approved/published.
-			\wp_set_comment_status( $imported, 'approve' );
+			// The comment keeps the status moderation gave it; a search must not approve it.
+			if ( '1' !== \get_comment( $imported )->comment_approved && \current_user_can( 'moderate_comments' ) ) {
+				// Admin::edit_comment() sends received replies on to their moderation view.
+				\wp_safe_redirect( \admin_url( 'comment.php?action=editcomment&c=' . $imported ) );
+				exit;
+			}
+
 			$comment_link   = \get_comment_link( $imported );
 			$validated_link = \wp_validate_redirect( $comment_link, \home_url() );
 			if ( $validated_link ) {
@@ -121,7 +135,7 @@ class Search {
 		}
 
 		// Try to fetch as ActivityPub object.
-		$object = Http::get_remote_object( $url );
+		$object = Proxy::get( $url );
 		if ( \is_wp_error( $object ) ) {
 			return false;
 		}
@@ -137,7 +151,9 @@ class Search {
 			'object' => $object,
 		);
 
-		// Import the reply as a comment.
-		return Interactions::add_comment( $activity );
+		// Import the reply as a comment; a failed import is no comment to lead to.
+		$imported = Interactions::add_comment( $activity );
+
+		return \is_wp_error( $imported ) ? false : $imported;
 	}
 }

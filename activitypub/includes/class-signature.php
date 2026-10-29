@@ -7,6 +7,7 @@
 
 namespace Activitypub;
 
+use Activitypub\Collection\Remote_Actors;
 use Activitypub\Signature\Http_Message_Signature;
 use Activitypub\Signature\Http_Signature_Draft;
 
@@ -20,6 +21,8 @@ class Signature {
 
 	/**
 	 * Initialize the class.
+	 *
+	 * @return void
 	 */
 	public static function init() {
 		\add_filter( 'http_request_args', array( self::class, 'sign_request' ), 0, 2 ); // Ahead of all other filters, so signature is set.
@@ -127,15 +130,18 @@ class Signature {
 	/**
 	 * Verifies the http signatures
 	 *
-	 * On success the verified keyId is returned (a truthy string), so callers can bind it to
-	 * the activity actor without re-parsing headers, which cannot tell which signature label
-	 * actually validated. Pass/fail callers should branch on {@see is_wp_error()} as before.
+	 * On success the id of the actor that owns the verified key is returned (a truthy string), so
+	 * callers can bind the signer to the activity actor without re-parsing headers, which cannot
+	 * tell which signature label actually validated. Pass/fail callers should branch on
+	 * {@see is_wp_error()} as before.
 	 *
 	 * @since 9.0.0 Returns the verified keyId on success instead of `true`.
+	 * @since 9.4.0 Returns the id of the actor that owns the verified key instead of the keyId.
+	 * @since 9.4.0 Refreshes a stored actor once when its key does not verify.
 	 *
 	 * @param \WP_REST_Request|array $request The request object or $_SERVER array.
 	 *
-	 * @return string|\WP_Error The verified keyId on success, WP_Error on failure.
+	 * @return string|\WP_Error The id of the actor that owns the verified key on success, WP_Error on failure.
 	 */
 	public static function verify_http_signature( $request ) {
 		if ( \is_object( $request ) ) { // REST Request object.
@@ -148,8 +154,22 @@ class Signature {
 		}
 
 		$signature = isset( $headers['signature_input'] ) ? new Http_Message_Signature() : new Http_Signature_Draft();
+		$result    = $signature->verify( $headers, $body ?? null );
 
-		return $signature->verify( $headers, $body ?? null );
+		/*
+		 * A known key that does not verify, or whose type no longer matches the algorithm, may have
+		 * been rotated. Refresh the stored actor from its own host once and verify again, as
+		 * Mastodon does.
+		 */
+		if ( \is_wp_error( $result ) && \array_intersect( array( 'activitypub_signature', 'alg_key_mismatch' ), $result->get_error_codes() ) && \is_object( $request ) ) {
+			$key_id = self::get_key_id( $request );
+
+			if ( $key_id && Remote_Actors::refresh_public_key( $key_id ) ) {
+				$result = $signature->verify( $headers, $body ?? null );
+			}
+		}
+
+		return $result;
 	}
 
 	/**
@@ -319,6 +339,8 @@ class Signature {
 	 * Set RFC-9421 signature unsupported for a given host.
 	 *
 	 * @param string $url The URL to set.
+	 *
+	 * @return void
 	 */
 	private static function rfc9421_add_unsupported_host( $url ) {
 		$list = \get_option( 'activitypub_rfc9421_unsupported', array() );

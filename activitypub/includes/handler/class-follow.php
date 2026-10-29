@@ -23,6 +23,8 @@ use function Activitypub\object_to_uri;
 class Follow {
 	/**
 	 * Initialize the class, registering WordPress hooks.
+	 *
+	 * @return void
 	 */
 	public static function init() {
 		\add_action( 'activitypub_inbox_follow', array( self::class, 'handle_follow' ), 10, 2 );
@@ -37,10 +39,16 @@ class Follow {
 	 *
 	 * @param array     $activity The activity object.
 	 * @param int|int[] $user_ids The user ID(s).
+	 *
+	 * @return void
 	 */
 	public static function handle_follow( $activity, $user_ids ) {
-		// Extract the user ID (follow requests are always for a single user).
-		$user_id = \is_array( $user_ids ) ? \reset( $user_ids ) : $user_ids;
+		// Only a Follow of an actor that received it, and the follower is added to that actor.
+		$user_id = Actors::get_id_by_resource( $activity['object'] ?? '' );
+		if ( \is_wp_error( $user_id ) || ! \in_array( (int) $user_id, \array_map( 'intval', (array) $user_ids ), true ) ) {
+			return;
+		}
+		$user_id = (int) $user_id;
 
 		// Check if the actor already follows the user.
 		$already_following = false;
@@ -91,6 +99,8 @@ class Follow {
 	 * @param int|int[]          $user_ids        The local user IDs.
 	 * @param bool               $success         True on success, false otherwise.
 	 * @param \WP_Post|\WP_Error $remote_actor    The remote actor/follower, or WP_Error if failed.
+	 *
+	 * @return void
 	 */
 	public static function queue_accept( $activity_object, $user_ids, $success, $remote_actor ) {
 		if ( \is_wp_error( $remote_actor ) ) {
@@ -135,6 +145,8 @@ class Follow {
 	 *
 	 * @param array $activity The Follow activity data.
 	 * @param int[] $user_ids The local recipient IDs the inbox resolved.
+	 *
+	 * @return void
 	 */
 	public static function reject_application_follow( $activity, $user_ids ) {
 		// A resolved recipient means the Follow targets a real actor, not the Application.

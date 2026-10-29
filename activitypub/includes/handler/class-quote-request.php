@@ -12,8 +12,10 @@ use Activitypub\Collection\Actors;
 use Activitypub\Collection\Followers;
 use Activitypub\Collection\Inbox;
 use Activitypub\Collection\Remote_Actors;
+use Activitypub\Proxy;
 
 use function Activitypub\add_to_outbox;
+use function Activitypub\is_same_actor;
 use function Activitypub\is_same_host;
 use function Activitypub\object_to_uri;
 use function Activitypub\user_can_activitypub;
@@ -26,9 +28,11 @@ use function Activitypub\user_can_activitypub;
 class Quote_Request {
 	/**
 	 * Initialize the class, registering WordPress hooks.
+	 *
+	 * @return void
 	 */
 	public static function init() {
-		\add_action( 'activitypub_inbox_quote_request', array( self::class, 'handle_quote_request' ), 10, 2 );
+		\add_action( 'activitypub_inbox_quote_request', array( self::class, 'handle_quote_request' ), 10, 4 );
 		\add_action( 'activitypub_rest_inbox_disallowed', array( self::class, 'handle_blocked_request' ), 10, 3 );
 		\add_action( 'delete_comment', array( self::class, 'handle_quote_delete' ), 10, 2 );
 
@@ -38,10 +42,14 @@ class Quote_Request {
 	/**
 	 * Handle QuoteRequest activities.
 	 *
-	 * @param array     $activity The activity object.
-	 * @param int|int[] $user_ids The user ID(s).
+	 * @param array         $activity        The activity object.
+	 * @param int|int[]     $user_ids        The user ID(s).
+	 * @param Activity|null $activity_object Optional. The activity object. Default null.
+	 * @param string|null   $context         Optional. The inbox context. Default null.
+	 *
+	 * @return void
 	 */
-	public static function handle_quote_request( $activity, $user_ids ) {
+	public static function handle_quote_request( $activity, $user_ids, $activity_object = null, $context = null ) { // phpcs:ignore VariableAnalysis.CodeAnalysis.VariableAnalysis.UnusedVariable
 		$state   = true;
 		$post_id = \url_to_postid( object_to_uri( $activity['object'] ) );
 		$post    = $post_id ? \get_post( $post_id ) : null;
@@ -53,7 +61,24 @@ class Quote_Request {
 		}
 
 		// Use the post author as the responding actor — they own the quoted content.
-		$user_id        = (int) $post->post_author;
+		$user_id = (int) $post->post_author;
+
+		/*
+		 * Only the actor of the post can approve a quote of it, and queue_accept() answers as the
+		 * blog when the author cannot. A request in another actor's inbox did not ask them, so
+		 * that actor declines it. The shared inbox runs this once per recipient, and the owner's
+		 * run answers, so the other recipients stay silent.
+		 */
+		$owner = user_can_activitypub( $user_id ) ? $user_id : Actors::BLOG_USER_ID;
+		if ( ! \in_array( $owner, \array_map( 'intval', (array) $user_ids ), true ) ) {
+			if ( Inbox::CONTEXT_SHARED_INBOX === $context ) {
+				return;
+			}
+
+			self::queue_reject( $activity, \is_array( $user_ids ) ? \reset( $user_ids ) : $user_ids );
+			return;
+		}
+
 		$content_policy = \get_post_meta( $post_id, 'activitypub_interaction_policy_quote', true );
 
 		// Fall back to global default if not set.
@@ -63,26 +88,48 @@ class Quote_Request {
 
 		switch ( $content_policy ) {
 			case ACTIVITYPUB_INTERACTION_POLICY_ME:
-				self::queue_reject( $activity, $user_id );
 				$state = false;
 				break;
 			case ACTIVITYPUB_INTERACTION_POLICY_FOLLOWERS:
 				$follower = Remote_Actors::get_by_uri( object_to_uri( $activity['actor'] ) );
-				if ( ! \is_wp_error( $follower ) && Followers::follows( $follower->ID, $user_id ) ) {
-					self::queue_accept( $activity, $user_id, $post_id );
-				} else {
-					self::queue_reject( $activity, $user_id );
-					$state = false;
-				}
+				$state    = ! \is_wp_error( $follower ) && Followers::follows( $follower->ID, $user_id );
 				break;
 			case ACTIVITYPUB_INTERACTION_POLICY_ANYONE:
 			default:
-				self::queue_accept( $activity, $user_id, $post_id );
+				$state = true;
 				break;
 		}
 
+		/*
+		 * The approval is issued for the instrument, so it has to be the requesting actor's own
+		 * post. Sharing the actor's host is not enough, and the copy in the request is no proof.
+		 * A policy that rejects needs no proof, so the post is only fetched for an approval.
+		 */
+		if ( $state ) {
+			$instrument = Proxy::get( object_to_uri( $activity['instrument'] ) );
+
+			/*
+			 * Without the post there is nothing to decide: a Reject would be final, and an Accept would be
+			 * unproven. So the request is dropped, like any inbox activity whose fetch fails.
+			 */
+			if ( \is_wp_error( $instrument ) ) {
+				return;
+			}
+
+			// The fetched post has to be the instrument itself; an alias or redirect could otherwise lend another post's author.
+			$state = is_same_actor( $instrument['id'] ?? null, object_to_uri( $activity['instrument'] ) ) && is_same_actor( $instrument['attributedTo'] ?? null, $activity['actor'] );
+		}
+
+		if ( $state ) {
+			self::queue_accept( $activity, $user_id, $post_id );
+		} else {
+			self::queue_reject( $activity, $user_id );
+		}
+
 		/**
-		 * Fires after an ActivityPub QuoteRequest activity has been handled.
+		 * Fires after an ActivityPub QuoteRequest activity has been answered.
+		 *
+		 * Not fired when the quote post cannot be fetched, since the request is dropped unanswered.
 		 *
 		 * @param array  $activity       The ActivityPub activity data.
 		 * @param int[]  $user_ids       The local user IDs.
@@ -98,6 +145,8 @@ class Quote_Request {
 	 * @param array          $activity The activity array.
 	 * @param int|int[]|null $user_ids The user ID(s).
 	 * @param string         $type     The type of the activity.
+	 *
+	 * @return void
 	 */
 	public static function handle_blocked_request( $activity, $user_ids, $type ) {
 		if ( ! \in_array( \strtolower( $type ), array( 'quoterequest', 'quote_request' ), true ) ) {
@@ -118,6 +167,8 @@ class Quote_Request {
 	 *
 	 * @param int              $comment_id The comment ID being deleted.
 	 * @param \WP_Comment|null $comment    The comment object, or null if not available.
+	 *
+	 * @return void
 	 */
 	public static function handle_quote_delete( $comment_id, $comment ) {
 		// Try to get comment if not provided.
@@ -131,7 +182,7 @@ class Quote_Request {
 		}
 
 		// Get the post being quoted.
-		$post_id = $comment->comment_post_ID;
+		$post_id = (int) $comment->comment_post_ID;
 		if ( ! $post_id ) {
 			return;
 		}
@@ -182,7 +233,7 @@ class Quote_Request {
 		\delete_post_meta( $post_id, '_activitypub_quoted_by', $instrument_url );
 
 		// Send Reject activity to revoke the quote permission.
-		self::queue_reject( $activity_object, $post->post_author );
+		self::queue_reject( $activity_object, (int) $post->post_author );
 
 		/**
 		 * Fires after a quote comment has been deleted and Reject activity sent.
@@ -203,6 +254,8 @@ class Quote_Request {
 	 * @param array $activity_object The activity object.
 	 * @param int   $user_id         The user ID.
 	 * @param int   $post_id         The post ID.
+	 *
+	 * @return void
 	 */
 	public static function queue_accept( $activity_object, $user_id, $post_id ) {
 		// Fall back to the blog actor if the user has ActivityPub disabled.
@@ -272,6 +325,8 @@ class Quote_Request {
 	 *
 	 * @param array $activity_object The activity object.
 	 * @param int   $user_id  The user ID.
+	 *
+	 * @return void
 	 */
 	public static function queue_reject( $activity_object, $user_id ) {
 		// Fall back to the blog actor if the user has ActivityPub disabled.

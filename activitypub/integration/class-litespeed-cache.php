@@ -7,7 +7,9 @@
 
 namespace Activitypub\Integration;
 
+use function Activitypub\is_activitypub_request;
 use function Activitypub\is_plugin_active;
+use function Activitypub\should_negotiate_content;
 
 /**
  * LiteSpeed Cache integration.
@@ -17,13 +19,20 @@ use function Activitypub\is_plugin_active;
 class Litespeed_Cache {
 
 	/**
+	 * The `Accept` pattern that puts a request into the JSON cache bucket.
+	 *
+	 * @var string
+	 */
+	const ACCEPT_PATTERN = '^[\s,]*(application/activity\+json|application/ld\+json[^,]*activitystreams)';
+
+	/**
 	 * The rules to add to the htaccess file.
 	 *
 	 * @var string
 	 */
 	public static $rules = '<IfModule LiteSpeed>
 RewriteEngine On
-RewriteCond %{HTTP:Accept} ^[\s,]*(application/activity\+json|application/ld\+json[^,]*activitystreams) [NC]
+RewriteCond %{HTTP:Accept} ' . self::ACCEPT_PATTERN . ' [NC]
 RewriteRule ^ - [E=Cache-Control:vary=%{ENV:LSCACHE_VARY_VALUE}+isjson]
 </IfModule>';
 
@@ -50,6 +59,8 @@ RewriteRule ^ - [E=Cache-Control:vary=%{ENV:LSCACHE_VARY_VALUE}+isjson]
 
 	/**
 	 * Initialize the integration.
+	 *
+	 * @return void
 	 */
 	public static function init() {
 		// Add rules if LiteSpeed Cache is active and rules aren't set.
@@ -61,6 +72,7 @@ RewriteRule ^ - [E=Cache-Control:vary=%{ENV:LSCACHE_VARY_VALUE}+isjson]
 			}
 
 			\add_filter( 'site_status_tests', array( self::class, 'add_site_health_test' ) );
+			\add_action( 'template_redirect', array( self::class, 'maybe_disable_cache' ) );
 
 			// Remove rules if LiteSpeed Cache is not active but rules were previously set.
 		} elseif ( \get_option( self::$option_name ) ) {
@@ -72,9 +84,33 @@ RewriteRule ^ - [E=Cache-Control:vary=%{ENV:LSCACHE_VARY_VALUE}+isjson]
 	}
 
 	/**
+	 * Keep a response out of the cache when its cache bucket and its representation can disagree.
+	 *
+	 * The rewrite rule picks a bucket from `Accept`. The request decision also includes query
+	 * parameters and filters, so a mismatch must not be stored in that bucket.
+	 *
+	 * @return void
+	 */
+	public static function maybe_disable_cache() {
+		// A request through `?activitypub` or the `/activitypub/` endpoint has its own cache entry, whatever `Accept` says.
+		if ( false !== \get_query_var( 'activitypub', false ) ) {
+			return;
+		}
+
+		$accept = isset( $_SERVER['HTTP_ACCEPT'] ) ? \wp_unslash( $_SERVER['HTTP_ACCEPT'] ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+		$bucket = (bool) \preg_match( \sprintf( '#%s#i', self::ACCEPT_PATTERN ), $accept );
+
+		if ( ( is_activitypub_request() && should_negotiate_content() ) !== $bucket ) {
+			\do_action( 'litespeed_control_set_nocache', 'ActivityPub: cache bucket and request disagree' );
+		}
+	}
+
+	/**
 	 * Clean up htaccess rules when LiteSpeed Cache plugin is deleted.
 	 *
 	 * @param string $plugin_file Path to the plugin file relative to the plugins directory.
+	 *
+	 * @return void
 	 */
 	public static function on_plugin_deleted( $plugin_file ) {
 		if ( self::$plugin_slug === $plugin_file && \get_option( self::$option_name ) ) {
@@ -84,6 +120,8 @@ RewriteRule ^ - [E=Cache-Control:vary=%{ENV:LSCACHE_VARY_VALUE}+isjson]
 
 	/**
 	 * Add the LiteSpeed Cache htaccess rules.
+	 *
+	 * @return void
 	 */
 	public static function add_htaccess_rules() {
 		$added_rules = self::append_with_markers( self::$marker, self::$rules );
@@ -98,6 +136,8 @@ RewriteRule ^ - [E=Cache-Control:vary=%{ENV:LSCACHE_VARY_VALUE}+isjson]
 
 	/**
 	 * Remove the LiteSpeed Cache htaccess rules.
+	 *
+	 * @return void
 	 */
 	public static function remove_htaccess_rules() {
 		self::append_with_markers( self::$marker, '' );

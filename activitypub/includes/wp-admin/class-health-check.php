@@ -10,7 +10,7 @@ namespace Activitypub\WP_Admin;
 use Activitypub\Application;
 use Activitypub\Collection\Actors;
 use Activitypub\Collection\Outbox;
-use Activitypub\Http;
+use Activitypub\Proxy;
 use Activitypub\Sanitize;
 use Activitypub\Scheduler;
 use Activitypub\Webfinger;
@@ -26,6 +26,8 @@ class Health_Check {
 
 	/**
 	 * Initialize health checks.
+	 *
+	 * @return void
 	 */
 	public static function init() {
 		\add_filter( 'site_status_tests', array( self::class, 'add_tests' ) );
@@ -40,6 +42,8 @@ class Health_Check {
 	 *
 	 * This is called when the ActivityPub settings page is loaded to
 	 * automatically restore any missing scheduled events.
+	 *
+	 * @return void
 	 */
 	public static function ensure_schedules_registered() {
 		$missing_schedules = self::get_missing_schedules();
@@ -242,7 +246,7 @@ class Health_Check {
 		$actor = Actors::get_by_id( \get_current_user_id() );
 
 		// Try to access author URL.
-		$response = Http::get_remote_object( $actor->get_id() );
+		$response = Proxy::get( $actor->get_id() );
 
 		if ( \is_wp_error( $response ) ) {
 			return new \WP_Error(

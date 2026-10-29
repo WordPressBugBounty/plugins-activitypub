@@ -7,6 +7,8 @@
 
 namespace Activitypub;
 
+use Activitypub\Cache\Comment_Media;
+use Activitypub\Cache\Media;
 use Activitypub\Cache\Stats_Image;
 use Activitypub\Collection\Actors;
 use Activitypub\Collection\Followers;
@@ -66,6 +68,8 @@ class Blocks {
 
 	/**
 	 * Initialize the class, registering WordPress hooks.
+	 *
+	 * @return void
 	 */
 	public static function init() {
 		// This is already being called on the init hook, so just add it.
@@ -76,6 +80,7 @@ class Blocks {
 		\add_action( 'pre_get_posts', array( self::class, 'filter_query_loop_vars' ) );
 
 		\add_action( 'load-post-new.php', array( self::class, 'handle_in_reply_to_get_param' ) );
+		\add_action( 'load-post-new.php', array( self::class, 'handle_quotation_of_get_param' ) );
 		// Add editor plugin.
 		\add_action( 'enqueue_block_editor_assets', array( self::class, 'enqueue_editor_assets' ) );
 		\add_action( 'rest_api_init', array( self::class, 'register_rest_fields' ) );
@@ -89,6 +94,8 @@ class Blocks {
 
 	/**
 	 * Enqueue the block editor assets.
+	 *
+	 * @return void
 	 */
 	public static function enqueue_editor_assets() {
 		$data = array(
@@ -107,6 +114,7 @@ class Blocks {
 			'objectType'            => \get_option( 'activitypub_object_type', ACTIVITYPUB_DEFAULT_OBJECT_TYPE ),
 			'noteLength'            => ACTIVITYPUB_NOTE_LENGTH,
 			'statsImageUrlEndpoint' => Stats_Image::is_available() ? \get_rest_url( null, ACTIVITYPUB_REST_NAMESPACE . '/stats/image-url/{user_id}/{year}' ) : '',
+			'reactionTypes'         => self::get_reaction_types(),
 		);
 		\wp_localize_script( 'wp-editor', '_activityPubOptions', $data );
 
@@ -128,21 +136,52 @@ class Blocks {
 
 	/**
 	 * Enqueue the reply handle script if the in_reply_to GET param is set.
+	 *
+	 * @return void
 	 */
 	public static function handle_in_reply_to_get_param() {
-		// Only load the script if the in_reply_to GET param is set, action happens there, not here.
-		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
-		if ( ! isset( $_GET['in_reply_to'] ) ) {
+		self::enqueue_intent_script( 'in_reply_to', 'reply-intent' );
+	}
+
+	/**
+	 * Enqueue an intent script when its URL parameter is present.
+	 *
+	 * The script reads the parameter itself and prefills the matching block, so nothing
+	 * is read here beyond the presence of the parameter.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @param string $param  The URL parameter carrying the address.
+	 * @param string $script The build folder and script handle suffix.
+	 *
+	 * @return void
+	 */
+	private static function enqueue_intent_script( $param, $script ) {
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only, the script only prefills a block.
+		if ( ! isset( $_GET[ $param ] ) ) {
 			return;
 		}
 
-		$asset_data = include ACTIVITYPUB_PLUGIN_DIR . 'build/reply-intent/plugin.asset.php';
-		$plugin_url = \plugins_url( 'build/reply-intent/plugin.js', ACTIVITYPUB_PLUGIN_FILE );
-		\wp_enqueue_script( 'activitypub-reply-intent', $plugin_url, $asset_data['dependencies'], $asset_data['version'], true );
+		$asset_data = include ACTIVITYPUB_PLUGIN_DIR . 'build/' . $script . '/plugin.asset.php';
+		$plugin_url = \plugins_url( 'build/' . $script . '/plugin.js', ACTIVITYPUB_PLUGIN_FILE );
+		\wp_enqueue_script( 'activitypub-' . $script, $plugin_url, $asset_data['dependencies'], $asset_data['version'], true );
+	}
+
+	/**
+	 * Enqueue the quote intent script if the quotation_of GET param is set.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @return void
+	 */
+	public static function handle_quotation_of_get_param() {
+		self::enqueue_intent_script( 'quotation_of', 'quote-intent' );
 	}
 
 	/**
 	 * Register the blocks.
+	 *
+	 * @return void
 	 */
 	public static function register_blocks() {
 		\register_block_type_from_metadata( ACTIVITYPUB_PLUGIN_DIR . '/build/extra-fields' );
@@ -158,7 +197,13 @@ class Blocks {
 		// Register reactions block, conditionally removing facepile style if avatars are disabled.
 		$reactions_args = array();
 		if ( ! \get_option( 'show_avatars', true ) ) {
-			$reactions_args['styles'] = array();
+			// Compact is the default then, so only Counts is left to pick.
+			$reactions_args['styles'] = array(
+				array(
+					'name'  => 'counts',
+					'label' => \__( 'Counts', 'activitypub' ),
+				),
+			);
 		}
 		\register_block_type_from_metadata( ACTIVITYPUB_PLUGIN_DIR . '/build/reactions', $reactions_args );
 
@@ -166,6 +211,13 @@ class Blocks {
 			ACTIVITYPUB_PLUGIN_DIR . '/build/reply',
 			array(
 				'render_callback' => array( self::class, 'render_reply_block' ),
+			)
+		);
+
+		\register_block_type_from_metadata(
+			ACTIVITYPUB_PLUGIN_DIR . '/build/quote',
+			array(
+				'render_callback' => array( self::class, 'render_quote_block' ),
 			)
 		);
 
@@ -185,8 +237,11 @@ class Blocks {
 			'activitypub/image',
 			array(
 				'attributes'      => array(
-					'url' => array( 'type' => 'string' ),
+					'url'        => array( 'type' => 'string' ),
+					'urlEncoded' => array( 'type' => 'boolean' ),
+					'alt'        => array( 'type' => 'string' ),
 				),
+				'uses_context'    => array( 'postId', 'commentId' ),
 				'render_callback' => array( self::class, 'render_image_block' ),
 			)
 		);
@@ -214,6 +269,8 @@ class Blocks {
 
 	/**
 	 * Register block patterns for ActivityPub.
+	 *
+	 * @return void
 	 */
 	public static function register_patterns() {
 		// Register the ActivityPub pattern category.
@@ -245,6 +302,8 @@ class Blocks {
 
 	/**
 	 * Register FSE templates for block themes.
+	 *
+	 * @return void
 	 */
 	public static function register_templates() {
 		// Only register templates for block themes on WP 6.7+.
@@ -289,6 +348,8 @@ class Blocks {
 
 	/**
 	 * Register REST fields needed for blocks.
+	 *
+	 * @return void
 	 */
 	public static function register_rest_fields() {
 		// Register the post_count field for Follow Me block.
@@ -311,6 +372,55 @@ class Blocks {
 					'description' => 'Number of published posts',
 					'type'        => 'integer',
 					'context'     => array( 'activitypub' ),
+				),
+			)
+		);
+
+		// Tells the editor whether the post endpoints will answer for this post, so the Reactions block only asks when they do.
+		\register_rest_field(
+			\get_post_types_by_support( 'activitypub' ),
+			'activitypub_publicly_queryable',
+			array(
+				/**
+				 * Whether the post is publicly queryable via ActivityPub.
+				 *
+				 * @param array $response Prepared response array.
+				 * @return bool True if the post is publicly queryable.
+				 */
+				'get_callback' => static function ( $response ) {
+					return is_post_publicly_queryable( $response['id'] );
+				},
+				'schema'       => array(
+					'description' => 'Whether the post is publicly queryable via ActivityPub',
+					'type'        => 'boolean',
+					'context'     => array( 'edit' ),
+				),
+			)
+		);
+
+		// Lets the Quote block show whether the quoted author accepted or declined.
+		\register_rest_field(
+			\get_post_types_by_support( 'activitypub' ),
+			'activitypub_quote',
+			array(
+				/**
+				 * Quote handshake state for the editor.
+				 *
+				 * @param array $response Prepared response array.
+				 * @return array { request: string|null, authorization: string|null, rejected: bool }
+				 */
+				'get_callback' => static function ( $response ) {
+					return array(
+						// The URL the answer was for: a stamp or a rejection says nothing about a URL the author never saw.
+						'request'       => \get_post_meta( $response['id'], '_activitypub_quote_request', true ) ?: null,
+						'authorization' => \get_post_meta( $response['id'], '_activitypub_quote_authorization', true ) ?: null,
+						'rejected'      => (bool) \get_post_meta( $response['id'], '_activitypub_quote_rejected', true ),
+					);
+				},
+				'schema'       => array(
+					'description' => 'FEP-044f quote handshake state of the post',
+					'type'        => 'object',
+					'context'     => array( 'edit' ),
 				),
 			)
 		);
@@ -546,22 +656,32 @@ class Blocks {
 	 *
 	 * Replaces remote image URL with cached URL at runtime.
 	 *
-	 * @param array  $attrs   The block attributes.
-	 * @param string $content The block inner content (img tag).
+	 * @param array          $attrs   The block attributes.
+	 * @param string         $content The block inner content (img tag).
+	 * @param \WP_Block|null $block   Optional. The block instance.
 	 *
-	 * @return string The rendered content with cached URL.
+	 * @return string The rendered content with cached URL, or the image description if a comment image has no URL.
 	 */
-	public static function render_image_block( $attrs, $content ) {
-		if ( empty( $attrs['url'] ) || empty( $content ) ) {
-			return $content;
+	public static function render_image_block( $attrs, $content, $block = null ) {
+		$comment_id = $block->context['commentId'] ?? null;
+
+		// Only blocks that carry their alt text can rebuild a missing img.
+		if ( empty( $attrs['url'] ) || ( empty( $content ) && ! isset( $attrs['alt'] ) ) ) {
+			return $comment_id ? self::render_image_description( $attrs ) : $content;
 		}
 
-		$url = $attrs['url'];
+		$url       = self::get_image_url( $attrs );
+		$processor = new \WP_HTML_Tag_Processor( $content );
+		if ( isset( $attrs['alt'] ) && ( ! $processor->next_tag( array( 'tag_name' => 'IMG' ) ) || ! $processor->get_attribute( 'src' ) ) ) {
+			// Comment sanitization removes img attributes; retain them in the block instead.
+			$content = \sprintf( '<img src="%s" alt="%s" loading="lazy" style="max-width:100%%;height:auto" />', \esc_url( \htmlspecialchars( $url, ENT_QUOTES, 'UTF-8', true ) ), \esc_attr( $attrs['alt'] ) );
+		}
 
-		// Get entity ID from context.
-		$entity_id = null;
-		$post      = \get_post();
-		if ( $post ) {
+		// Get entity ID from context, comment images are cached per comment.
+		$cache_context = $comment_id ? Comment_Media::CONTEXT : Media::CONTEXT;
+		$entity_id     = $comment_id ?: ( $block->context['postId'] ?? null );
+		$post          = \get_post();
+		if ( ! $entity_id && $post ) {
 			$entity_id = $post->ID;
 		}
 
@@ -569,17 +689,59 @@ class Blocks {
 		 * Filters a remote image URL for caching.
 		 *
 		 * @param string      $url       The remote image URL.
-		 * @param string      $context   The context ('media').
-		 * @param int|null    $entity_id The entity ID.
+		 * @param string      $context   The context ('media' or 'comment_media').
+		 * @param int|null    $entity_id The entity ID, a comment ID for 'comment_media'.
 		 * @param array       $options   Additional options.
 		 */
-		$cached_url = \apply_filters( 'activitypub_remote_media_url', $url, 'media', $entity_id, array() );
+		$cached_url = \apply_filters( 'activitypub_remote_media_url', $url, $cache_context, $entity_id, array() );
 
 		if ( $cached_url && $cached_url !== $url ) {
-			return \str_replace( $url, $cached_url, $content );
+			$processor = new \WP_HTML_Tag_Processor( $content );
+			if ( $processor->next_tag( array( 'tag_name' => 'IMG' ) ) ) {
+				$processor->set_attribute( 'src', $cached_url );
+				// Browsers prefer srcset candidates, which still point to the remote host.
+				$processor->remove_attribute( 'srcset' );
+				return $processor->get_updated_html();
+			}
 		}
 
 		return $content;
+	}
+
+	/**
+	 * Get the remote URL of an image block.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @param array $attrs The image block attributes.
+	 *
+	 * @return string The remote URL, empty if the block has none.
+	 */
+	public static function get_image_url( $attrs ) {
+		if ( empty( $attrs['url'] ) || ! \is_string( $attrs['url'] ) ) {
+			return '';
+		}
+
+		// Comment sanitization would mangle a raw URL, so generated blocks store it encoded.
+		return ! empty( $attrs['urlEncoded'] ) ? \wp_specialchars_decode( $attrs['url'], ENT_QUOTES ) : $attrs['url'];
+	}
+
+	/**
+	 * Render the description of an image that is not shown.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @param array $attrs The image block attributes.
+	 *
+	 * @return string The description as a paragraph.
+	 */
+	public static function render_image_description( $attrs ) {
+		$alt = $attrs['alt'] ?? '';
+
+		return '<p>' . \esc_html(
+			/* translators: %s: Image description. */
+			$alt ? \sprintf( \__( 'Image: %s', 'activitypub' ), $alt ) : \__( 'Image', 'activitypub' )
+		) . '</p>';
 	}
 
 	/**
@@ -667,6 +829,9 @@ class Blocks {
 	/**
 	 * Render the reply block.
 	 *
+	 * @see https://indieweb.org/in-reply-to
+	 * @see https://indieweb.org/reply-context
+	 *
 	 * @param array $attrs The block attributes.
 	 *
 	 * @return string The HTML to render.
@@ -701,39 +866,127 @@ class Blocks {
 		$wrapper_attrs = \get_block_wrapper_attributes(
 			array(
 				'aria-label'       => \__( 'Reply', 'activitypub' ),
-				'class'            => 'activitypub-reply-block',
+				'class'            => 'activitypub-reply-block u-in-reply-to h-cite',
 				'data-in-reply-to' => $attrs['url'],
 			)
 		);
 
-		$html = '<div ' . $wrapper_attrs . '>';
-
-		// Try to get and append the embed if requested.
+		// Try to get the embed if requested.
 		$embed = null;
 		if ( $show_embed ) {
 			// Use the theme's content width or a reasonable default to avoid narrow embeds.
 			$embed_width = ! empty( $GLOBALS['content_width'] ) ? $GLOBALS['content_width'] : 600;
 			$embed       = \wp_oembed_get( $attrs['url'], array( 'width' => $embed_width ) );
 			if ( $embed ) {
-				$html .= $embed;
 				\wp_enqueue_script( 'wp-embed' );
 			}
 		}
 
 		// Show the link if embed is not requested or if embed failed.
-		if ( ! $show_embed || ! $embed ) {
-			$html .= \sprintf(
-				'<p><a title="%2$s" aria-label="%2$s" href="%1$s" class="u-in-reply-to" target="_blank">%3$s</a></p>',
-				\esc_url( $attrs['url'] ),
-				\esc_attr__( 'This post is a response to the referenced content.', 'activitypub' ),
-				// translators: %s is the URL of the post being replied to.
-				\sprintf( \__( '&#8620;%s', 'activitypub' ), \str_replace( array( 'https://', 'http://' ), '', \esc_url( $attrs['url'] ) ) )
+		$inner = $embed ? $embed : \sprintf(
+			'<p><a title="%2$s" aria-label="%2$s" href="%1$s" class="u-in-reply-to" target="_blank">%3$s</a></p>',
+			\esc_url( $attrs['url'] ),
+			\esc_attr__( 'This post is a response to the referenced content.', 'activitypub' ),
+			// translators: %s is the URL of the post being replied to.
+			\sprintf( \__( '&#8620;%s', 'activitypub' ), \str_replace( array( 'https://', 'http://' ), '', \esc_url( $attrs['url'] ) ) )
+		);
+
+		return \sprintf( '<div %1$s>%2$s</div>', $wrapper_attrs, $inner );
+	}
+
+	/**
+	 * Render the Quote block.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @see https://indieweb.org/quotation
+	 *
+	 * @param array          $attrs   The block attributes.
+	 * @param string         $content The block inner content (unused).
+	 * @param \WP_Block|null $block   The block instance, used to resolve the post outside the loop.
+	 *
+	 * @return string|null The block HTML.
+	 */
+	public static function render_quote_block( $attrs, $content = '', $block = null ) {
+		if ( empty( $attrs['url'] ) ) {
+			return null;
+		}
+
+		$url     = $attrs['url'];
+		$post_id = $block instanceof \WP_Block && ! empty( $block->context['postId'] ) ? (int) $block->context['postId'] : \get_the_ID();
+		// A rejection only covers the URL it was answered for; a new URL starts a new handshake.
+		$rejected = $post_id
+			&& \get_post_meta( $post_id, '_activitypub_quote_rejected', true )
+			&& \get_post_meta( $post_id, '_activitypub_quote_request', true ) === $url;
+		// A declined quote, an invalid ActivityPub URL, or a post the block context couldn't resolve (the
+		// rejection meta is then unreadable) is shown as a plain link the site does not vouch for.
+		$is_quote = $post_id && ! $rejected && ( $attrs['isValidActivityPub'] ?? true );
+
+		$show_embed = $is_quote && ! empty( $attrs['embedPost'] ) && ! is_activitypub_request() && ! \is_feed();
+
+		$wrapper_attrs = \get_block_wrapper_attributes(
+			array(
+				'aria-label'        => \__( 'Quote', 'activitypub' ),
+				'class'             => 'activitypub-quote-block u-quotation-of h-cite',
+				'data-quotation-of' => $url,
+			)
+		);
+
+		$embed = null;
+		if ( $show_embed ) {
+			$embed_width = ! empty( $GLOBALS['content_width'] ) ? $GLOBALS['content_width'] : 600;
+			$embed       = \wp_oembed_get( $url, array( 'width' => $embed_width ) );
+
+			if ( $embed ) {
+				\wp_enqueue_script( 'wp-embed' );
+			}
+		}
+
+		// The citation needs a link to the source at a minimum, and the card carries one already.
+		$link = \sprintf(
+			'<p><a class="u-url" href="%1$s" target="_blank">%2$s</a></p>',
+			\esc_url( $url ),
+			\esc_html( \str_replace( array( 'https://', 'http://' ), '', $url ) )
+		);
+
+		// The embed carries the link, so it replaces it, the way the Reply block does it.
+		$inner = $embed ? $embed : $link;
+
+		return \sprintf( '<div %1$s>%2$s</div>', $wrapper_attrs, $inner );
+	}
+
+	/**
+	 * Get the comment and reaction types the reactions block counts.
+	 *
+	 * Comments come first, with the labels core uses. The reaction types bring their icons and
+	 * labels from the comment type registry.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @return array[] Types keyed by comment type, each with `icon`, `count_single` and `count_plural`.
+	 */
+	public static function get_reaction_types() {
+		// Core's comment icon when it has one (WordPress 7.1+), else the bundled SVG.
+		$icon  = \function_exists( 'wp_get_icon' ) ? \wp_get_icon( 'core/comment' ) : '';
+		$types = array(
+			'comment' => array(
+				'icon'         => $icon ? $icon : '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false"><path d="M18 4H6c-1.1 0-2 .9-2 2v12.9c0 .6.5 1.1 1.1 1.1.3 0 .5-.1.8-.3L8.5 17H18c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm.5 11c0 .3-.2.5-.5.5H7.9l-2.4 2.4V6c0-.3.2-.5.5-.5h12c.3 0 .5.2.5.5v9z"/></svg>',
+				/* translators: %s: Number of comments. */
+				'count_single' => \_n( '%s Comment', '%s Comments', 1, 'default' ),
+				/* translators: %s: Number of comments. */
+				'count_plural' => \_n( '%s Comment', '%s Comments', 2, 'default' ),
+			),
+		);
+
+		foreach ( Comment::get_comment_types() as $slug => $type ) {
+			$types[ $slug ] = array(
+				'icon'         => $type['icon'] ?? '',
+				'count_single' => $type['count_single'] ?? '',
+				'count_plural' => $type['count_plural'] ?? '',
 			);
 		}
 
-		$html .= '</div>';
-
-		return $html;
+		return $types;
 	}
 
 	/**
@@ -750,6 +1003,8 @@ class Blocks {
 	 *                                 (e.g. 'context.modal.title'). When set, uses data-wp-text
 	 *                                 on the title element and enables dynamic compact toggling.
 	 * }
+	 *
+	 * @return void
 	 */
 	public static function render_modal( $args = array() ) {
 		$defaults = array(
@@ -813,6 +1068,8 @@ class Blocks {
 	 * interactions to users unfamiliar with the Fediverse.
 	 *
 	 * @since 8.0.0
+	 *
+	 * @return void
 	 */
 	public static function render_modal_help() {
 		?>
@@ -832,6 +1089,8 @@ class Blocks {
 	 * Renders an actor list component that can be used by different blocks.
 	 *
 	 * @param array $args Arguments for the actor list.
+	 *
+	 * @return void
 	 */
 	public static function render_actor_list( $args = array() ) {
 		$defaults = array(
@@ -953,9 +1212,9 @@ class Blocks {
 	/**
 	 * Add Interactivity directions to the specified element.
 	 *
-	 * @param string   $content    The block content.
-	 * @param string[] $selector   The selector for the element to add directions to.
-	 * @param string[] $attributes The attributes to add to the element.
+	 * @param string                                        $content    The block content.
+	 * @param array{tag_name?: string, class_name?: string} $selector   The tag processor query for the element to add directions to.
+	 * @param string[]                                      $attributes The attributes to add to the element.
 	 *
 	 * @return string The updated content.
 	 */
@@ -980,10 +1239,13 @@ class Blocks {
 	 * Add post transformation callbacks.
 	 *
 	 * @param object $post The post object.
+	 *
+	 * @return void
 	 */
 	public static function add_post_transformation_callbacks( $post ) {
 		\add_filter( 'render_block_core/embed', array( self::class, 'revert_embed_links' ), 10, 2 );
 		\add_filter( 'render_block_activitypub/stats', '__return_empty_string' );
+		\add_filter( 'render_block_activitypub/quote', array( self::class, 'generate_quote_link' ), 10, 2 );
 
 		// Only transform reply link if it's the first block in the post.
 		$blocks = \parse_blocks( $post->post_content );
@@ -1003,6 +1265,7 @@ class Blocks {
 		\remove_filter( 'render_block_core/embed', array( self::class, 'revert_embed_links' ) );
 		\remove_filter( 'render_block_activitypub/reply', array( self::class, 'generate_reply_link' ) );
 		\remove_filter( 'render_block_activitypub/stats', '__return_empty_string' );
+		\remove_filter( 'render_block_activitypub/quote', array( self::class, 'generate_quote_link' ) );
 
 		return $content;
 	}
@@ -1027,7 +1290,7 @@ class Blocks {
 		$url = $block['attrs']['url'];
 
 		// Try to get ActivityPub representation. Is likely already cached.
-		$object = Http::get_remote_object( $url );
+		$object = Proxy::get( $url );
 		if ( \is_wp_error( $object ) ) {
 			return '';
 		}
@@ -1038,7 +1301,7 @@ class Blocks {
 		}
 
 		// Fetch author information.
-		$author = Http::get_remote_object( $author_url );
+		$author = Proxy::get( $author_url );
 		if ( \is_wp_error( $author ) ) {
 			return '';
 		}
@@ -1057,13 +1320,33 @@ class Blocks {
 			return '';
 		}
 
-		// Generate HTML @ link.
+		// The link targets the replied-to post, so it carries the reply microformat, not the mention one.
 		return \sprintf(
-			'<p class="ap-reply-mention"><a rel="mention ugc" href="%1$s" title="%2$s">%3$s</a></p>',
+			'<p class="ap-reply-mention"><a rel="in-reply-to ugc" class="u-in-reply-to" href="%1$s" title="%2$s">%3$s</a></p>',
 			\esc_url( $url ),
 			\esc_attr( $webfinger ),
 			\esc_html( '@' . \strtok( $webfinger, '@' ) )
 		);
+	}
+
+	/**
+	 * Replace the Quote block with a plain link in the ActivityPub content.
+	 *
+	 * Receivers render the quoted post from the `quote` property; inlining the embed would duplicate it.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @param string $block_content The block content.
+	 * @param array  $block         The block data.
+	 *
+	 * @return string The link markup.
+	 */
+	public static function generate_quote_link( $block_content, $block ) {
+		if ( empty( $block['attrs']['url'] ) ) {
+			return '';
+		}
+
+		return \sprintf( '<p><a href="%1$s">%2$s</a></p>', \esc_url( $block['attrs']['url'] ), \esc_html( $block['attrs']['url'] ) );
 	}
 
 	/**
@@ -1299,6 +1582,8 @@ class Blocks {
 	 * @since 8.1.0
 	 *
 	 * @param WP_Query $query The WP_Query instance.
+	 *
+	 * @return void
 	 */
 	public static function filter_query_loop_vars( $query ) {
 		// Never touch admin or feed queries.

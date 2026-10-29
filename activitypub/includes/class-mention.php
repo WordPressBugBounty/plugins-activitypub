@@ -8,6 +8,7 @@
 namespace Activitypub;
 
 use Activitypub\Collection\Remote_Actors;
+use Activitypub\Webfinger;
 
 /**
  * ActivityPub Mention Class.
@@ -17,6 +18,8 @@ use Activitypub\Collection\Remote_Actors;
 class Mention {
 	/**
 	 * Initialize the class, registering WordPress hooks.
+	 *
+	 * @return void
 	 */
 	public static function init() {
 		\add_filter( 'the_content', array( self::class, 'the_content' ), 99 );
@@ -54,7 +57,41 @@ class Mention {
 	 * @return string The filtered post-content.
 	 */
 	public static function the_content( $the_content ) {
-		return enrich_content_data( $the_content, '/@' . ACTIVITYPUB_USERNAME_REGEXP . '/', array( self::class, 'replace_with_links' ) );
+		/*
+		 * An excerpt is stripped of its tags, which would leave only the `@user` of the link. Without
+		 * the link it keeps `@user@host`, so the summary can still be linked by `filter_activity_object()`.
+		 */
+		if ( \doing_filter( 'get_the_excerpt' ) ) {
+			return $the_content;
+		}
+
+		return enrich_content_data( $the_content, self::get_pattern( $the_content ), array( self::class, 'replace_with_links' ) );
+	}
+
+	/**
+	 * The mention pattern for the given content.
+	 *
+	 * The `u` modifier fails on invalid UTF-8, and without it `\p{…}` matches single bytes of
+	 * multibyte characters, so such content is only matched against ASCII handles.
+	 *
+	 * @param string $content The content to match.
+	 *
+	 * @return string The pattern.
+	 */
+	private static function get_pattern( $content ) {
+		if ( \preg_match( '//u', $content ) ) {
+			return '/@' . ACTIVITYPUB_USERNAME_REGEXP . '/iu';
+		}
+
+		return '/@' . \strtr(
+			ACTIVITYPUB_USERNAME_REGEXP,
+			array(
+				'\p{L}'     => 'A-Za-z',
+				'\p{Latin}' => 'A-Za-z',
+				'\p{M}'     => '',
+				'\p{N}'     => '0-9',
+			)
+		) . '/i';
 	}
 
 	/**
@@ -138,13 +175,60 @@ class Mention {
 	 * @return array The discovered mentions.
 	 */
 	public static function extract_mentions( $mentions, $post_content ) {
-		\preg_match_all( '/@' . ACTIVITYPUB_USERNAME_REGEXP . '/i', $post_content, $matches );
-		foreach ( $matches[0] as $match ) {
+		\preg_match_all( self::get_pattern( $post_content ), $post_content, $matches );
+		foreach ( $matches[0] ?? array() as $match ) {
 			$link = Webfinger::resolve( $match );
 			if ( ! \is_wp_error( $link ) ) {
 				$mentions[ $match ] = $link;
 			}
 		}
+
+		/*
+		 * Clients and Mastodon write a mention as a link to the actor with a short label,
+		 * `<a class="u-url mention" href="…">@user</a>`, so the handle is not in the text.
+		 */
+		foreach ( self::extract_mention_links( $post_content ) as $href ) {
+			if ( \in_array( $href, $mentions, true ) ) {
+				continue;
+			}
+
+			$acct = Webfinger::uri_to_acct( $href );
+			if ( ! \is_wp_error( $acct ) ) {
+				$mentions[ \str_replace( 'acct:', '@', $acct ) ] = $href;
+			}
+		}
+
 		return \array_unique( $mentions );
+	}
+
+	/**
+	 * The links a piece of content marks as mentions.
+	 *
+	 * A mention link marks itself with the `mention` class, the microformats convention Mastodon
+	 * and the plugin share, or with `rel="mention"`.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @param string $content The content.
+	 *
+	 * @return string[] The hrefs, in order of appearance, without duplicates.
+	 */
+	public static function extract_mention_links( $content ) {
+		$links     = array();
+		$processor = new \WP_HTML_Tag_Processor( $content );
+
+		while ( $processor->next_tag( array( 'tag_name' => 'A' ) ) ) {
+			$rel = (string) $processor->get_attribute( 'rel' );
+			if ( ! $processor->has_class( 'mention' ) && ! \in_array( 'mention', \preg_split( '/\s+/', $rel ), true ) ) {
+				continue;
+			}
+
+			$href = $processor->get_attribute( 'href' );
+			if ( \is_string( $href ) && '' !== $href ) {
+				$links[] = $href;
+			}
+		}
+
+		return \array_values( \array_unique( $links ) );
 	}
 }

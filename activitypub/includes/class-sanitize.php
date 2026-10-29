@@ -24,6 +24,11 @@ class Sanitize {
 	 * embedded objects) or that browsers hide by default (dialogs,
 	 * templates), so we remove them entirely before wp_kses runs.
 	 *
+	 * MathML's `annotation-xml` is an alternative representation browsers never
+	 * render. With an HTML encoding it switches back to HTML parsing, and the
+	 * HTML-API-based wp_kses() of WordPress 7.2 then drops everything from the
+	 * enclosing `<math>` on, so it goes before wp_kses runs as well.
+	 *
 	 * @var array<string>
 	 */
 	const STRIP_ELEMENTS = array(
@@ -49,6 +54,7 @@ class Sanitize {
 		'applet',
 		'noembed',
 		'noframes',
+		'annotation-xml',
 	);
 
 	/**
@@ -167,10 +173,26 @@ class Sanitize {
 	 * @return string The sanitized blog identifier.
 	 */
 	public static function blog_identifier( $value ) {
+		/*
+		 * `sanitize_title()` hands multibyte characters to `utf8_uri_encode()`, which percent-encodes
+		 * them rather than dropping them, so an emoji survives into the handle as `%e2%9d%a4%ef%b8%8f`.
+		 * Strict `sanitize_user()` reduces to ASCII and kills any octets that are already there.
+		 */
+		$value = \sanitize_user( (string) $value, true );
+
 		// Hack to allow dots in the username.
-		$parts     = \explode( '.', (string) $value );
-		$sanitized = \array_map( 'sanitize_title', $parts );
-		$sanitized = \implode( '.', $sanitized );
+		$parts = \explode( '.', $value );
+		$parts = \array_map( 'sanitize_title', $parts );
+
+		// A segment can sanitize away to nothing, and a leading, trailing or doubled dot is not a usable handle.
+		$parts = \array_filter(
+			$parts,
+			static function ( $part ) {
+				return '' !== $part;
+			}
+		);
+
+		$sanitized = \implode( '.', $parts );
 
 		if ( empty( $sanitized ) ) {
 			return Blog::get_default_username();
@@ -250,6 +272,21 @@ class Sanitize {
 	}
 
 	/**
+	 * Sanitize an attachment ID that must point to an image. Returns 0 for anything else.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @param int|string $value The value to sanitize.
+	 *
+	 * @return int The sanitized attachment ID.
+	 */
+	public static function attachment_id( $value ) {
+		$id = \absint( $value );
+
+		return $id && \wp_attachment_is_image( $id ) ? $id : 0;
+	}
+
+	/**
 	 * Remove elements whose inner text is noise on its own.
 	 *
 	 * Used by {@see Sanitize::clean_html()}:
@@ -284,8 +321,9 @@ class Sanitize {
 	 * the FEP-b2b8 allowlist, which carries no `style` attribute and no interactive, scripting
 	 * or embed elements. Remote content is held to the FEP its own author federates under.
 	 *
-	 * HTML comments are stripped first, because this content is stored and later runs
-	 * through `do_blocks()`, which would otherwise reconstitute a remote block delimiter.
+	 * HTML comments are stripped before and after cleaning, because this content is stored
+	 * and later runs through `do_blocks()`, which would otherwise reconstitute a remote block
+	 * delimiter. The second pass catches comments that only appear once markup is removed.
 	 *
 	 * @param string $content The content to sanitize.
 	 *
@@ -303,6 +341,7 @@ class Sanitize {
 
 		$content = \wpautop( $content );
 		$content = self::clean_html( self::strip_html_comments( $content ) );
+		$content = self::strip_html_comments( $content );
 
 		/*
 		 * `do_shortcode()` runs on `the_content` right after `do_blocks()`, so a remote
@@ -338,7 +377,8 @@ class Sanitize {
 			return '';
 		}
 
-		return \wp_kses( self::strip_html_comments( $content ), self::get_allowed_comment_html(), \wp_allowed_protocols() );
+		$content = \wp_kses( self::strip_html_comments( $content ), self::get_allowed_comment_html(), \wp_allowed_protocols() );
+		return self::strip_html_comments( $content );
 	}
 
 	/**
@@ -359,6 +399,13 @@ class Sanitize {
 		if ( null === $allowed_tags ) {
 			$allowed_tags = \wp_kses_allowed_html( 'pre_comment_content' );
 		}
+
+		/*
+		 * WordPress 7.1 allows `span` in comments for its own mention markup. Mastodon wraps
+		 * shortened link text in `span`s, which `make_clickable()` then autolinks inside the
+		 * existing anchor. Drop the tag and keep the text, as every earlier WordPress did.
+		 */
+		unset( $allowed_tags['span'] );
 
 		// Add `p` and `br` to the list of allowed tags.
 		if ( ! \array_key_exists( 'br', $allowed_tags ) ) {
@@ -402,8 +449,11 @@ class Sanitize {
 	 * @return string The content without HTML comments.
 	 */
 	private static function strip_html_comments( $content ) {
-		// preg_replace() returns null if PCRE bails; an empty string is the safe reading.
-		return \preg_replace( '/<!--.*?-->/s', '', $content ) ?? '';
+		/*
+		 * A separator prevents the surrounding text from forming another comment delimiter.
+		 * preg_replace() returns null if PCRE bails; an empty string is the safe reading.
+		 */
+		return \preg_replace( '/<!--.*?(?:-->|$)/s', ' ', $content ) ?? '';
 	}
 
 	/**

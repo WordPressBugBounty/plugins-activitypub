@@ -30,6 +30,8 @@ class Dispatcher {
 
 	/**
 	 * Initialize the class, registering WordPress hooks.
+	 *
+	 * @return void
 	 */
 	public static function init() {
 		\add_action( 'activitypub_process_outbox', array( self::class, 'process_outbox' ) );
@@ -112,6 +114,8 @@ class Dispatcher {
 	 * Process the outbox.
 	 *
 	 * @param int $id The outbox ID.
+	 *
+	 * @return void
 	 */
 	public static function process_outbox( $id ) {
 		$outbox_item = \get_post( $id );
@@ -131,8 +135,17 @@ class Dispatcher {
 
 		$activity = Outbox::get_activity( $outbox_item );
 
+		if ( \is_wp_error( $activity ) ) {
+			// Nothing can be sent from a row we cannot read, so publish it and do not try again.
+			\wp_publish_post( $outbox_item );
+			// A rescheduled row can still carry the offset of the batch it was in, and reschedule() does not clear it.
+			\delete_post_meta( $outbox_item->ID, '_activitypub_outbox_offset' );
+
+			return;
+		}
+
 		// Send to mentioned and replied-to users. Everyone other than followers.
-		self::send_to_additional_inboxes( $activity, $outbox_item->post_author, $outbox_item );
+		self::send_to_additional_inboxes( $activity, (int) $outbox_item->post_author, $outbox_item );
 
 		if ( self::should_send_to_followers( $activity, $actor, $outbox_item ) ) {
 			\do_action(
@@ -171,11 +184,15 @@ class Dispatcher {
 		$activity = Outbox::get_activity( $outbox_item_id );
 
 		if ( \is_wp_error( $activity ) ) {
+			// Nothing can be sent from a row we cannot read, so publish it and do not try again.
+			\wp_publish_post( $outbox_item );
+			\delete_post_meta( $outbox_item_id, '_activitypub_outbox_offset' );
+
 			return;
 		}
 
 		$json    = $activity->to_json();
-		$inboxes = Followers::get_inboxes_for_activity( $json, $outbox_item->post_author, $batch_size, $offset );
+		$inboxes = Followers::get_inboxes_for_activity( $json, (int) $outbox_item->post_author, $batch_size, $offset );
 		$retries = self::send_to_inboxes( $inboxes, $outbox_item_id );
 
 		// Retry failed inboxes.
@@ -225,6 +242,8 @@ class Dispatcher {
 	 * @param string $transient_key  The key to retrieve retry inboxes.
 	 * @param int    $outbox_item_id The Outbox item ID.
 	 * @param int    $attempt        The attempt number.
+	 *
+	 * @return void
 	 */
 	public static function retry_send_to_followers( $transient_key, $outbox_item_id, $attempt = 1 ) {
 		$inboxes = \get_transient( $transient_key );
@@ -251,11 +270,13 @@ class Dispatcher {
 	 * @return array The failed inboxes.
 	 */
 	private static function send_to_inboxes( $inboxes, $outbox_item_id ) {
-		$outbox_item = \get_post( $outbox_item_id );
-
 		$activity = Outbox::get_activity( $outbox_item_id );
 
 		if ( \is_wp_error( $activity ) ) {
+			// Nothing can be sent from a row we cannot read, so publish it and do not try again.
+			\wp_publish_post( $outbox_item_id );
+			\delete_post_meta( $outbox_item_id, '_activitypub_outbox_offset' );
+
 			return array();
 		}
 
@@ -272,12 +293,14 @@ class Dispatcher {
 		 */
 		\do_action( 'activitypub_pre_send_to_inboxes', $json, $inboxes, $outbox_item_id );
 
+		$outbox_item = \get_post( $outbox_item_id );
+
 		foreach ( $inboxes as $inbox ) {
 			// Handle local inboxes via internal REST API, remote via HTTP.
 			if ( is_same_domain( $inbox ) ) {
 				$result = self::send_to_local_inbox( $inbox, $json );
 			} else {
-				$result = safe_remote_post( $inbox, $json, $outbox_item->post_author );
+				$result = safe_remote_post( $inbox, $json, (int) $outbox_item->post_author );
 			}
 
 			if ( \is_wp_error( $result ) && \in_array( $result->get_error_code(), self::get_retry_error_codes(), true ) ) {
@@ -307,9 +330,18 @@ class Dispatcher {
 	 * @return array|\WP_Error The result in the format of a remote post response, or WP_Error on failure.
 	 */
 	private static function send_to_local_inbox( $inbox_url, $json ) {
-		// Parse the inbox URL to extract the REST route.
-		$path       = \wp_parse_url( $inbox_url, PHP_URL_PATH ) ?? '';
-		$rest_route = \preg_replace( '#^/' . \preg_quote( \rest_get_url_prefix(), '#' ) . '#', '', $path );
+		// Core resolves the route for subdirectory installs and every permalink setting.
+		$url_request = \WP_REST_Request::from_url( $inbox_url );
+		$rest_route  = $url_request ? $url_request->get_route() : '';
+
+		/*
+		 * The inbox URL comes from a remote actor document, and signature verification is deferred below,
+		 * so only the shared inbox and an actor inbox may be reached this way.
+		 */
+		$inbox_route = \sprintf( '#^/%s/(?:(?:users|actors)/-?\d+/)?inbox$#', \preg_quote( ACTIVITYPUB_REST_NAMESPACE, '#' ) );
+		if ( ! \preg_match( $inbox_route, $rest_route ) ) {
+			return new \WP_Error( 'activitypub_invalid_inbox', 'The local inbox is not an ActivityPub inbox.', array( 'status' => 400 ) );
+		}
 
 		// Create a REST request.
 		$request = new \WP_REST_Request( 'POST', $rest_route );
@@ -340,6 +372,8 @@ class Dispatcher {
 	 * @param array $retries        The inboxes to retry.
 	 * @param int   $outbox_item_id The Outbox item ID.
 	 * @param int   $attempt        Optional. The attempt number. Default 1.
+	 *
+	 * @return void
 	 */
 	private static function schedule_retry( $retries, $outbox_item_id, $attempt = 1 ) {
 		$transient_key = 'activitypub_retry_' . \wp_generate_password( 12, false );
@@ -360,6 +394,8 @@ class Dispatcher {
 	 * @param Activity $activity    The ActivityPub Activity.
 	 * @param int      $actor_id    The actor ID.
 	 * @param \WP_Post $outbox_item The WordPress object.
+	 *
+	 * @return void
 	 */
 	private static function send_to_additional_inboxes( $activity, $actor_id, $outbox_item = null ) {
 		/**
@@ -433,7 +469,7 @@ class Dispatcher {
 				continue;
 			}
 
-			$object = Http::get_remote_object( $url );
+			$object = Proxy::get( $url );
 
 			if (
 				! $object ||
@@ -444,7 +480,7 @@ class Dispatcher {
 			}
 
 			$actor = object_to_uri( $object['attributedTo'] );
-			$actor = Http::get_remote_object( $actor );
+			$actor = Proxy::get( $actor );
 
 			if ( ! $actor || \is_wp_error( $actor ) ) {
 				continue;
@@ -485,7 +521,7 @@ class Dispatcher {
 		);
 
 		if ( $send ) {
-			$followers = Followers::get_inboxes_for_activity( $activity->to_json(), $outbox_item->post_author );
+			$followers = Followers::get_inboxes_for_activity( $activity->to_json(), (int) $outbox_item->post_author );
 
 			// Only send if there are followers to send to.
 			$send = ! \is_countable( $followers ) || 0 < \count( $followers );
@@ -534,6 +570,8 @@ class Dispatcher {
 	 *
 	 * @param int      $outbox_id The Outbox item ID.
 	 * @param Activity $activity  The Activity that was just added to the Outbox.
+	 *
+	 * @return void
 	 */
 	public static function fire_outbox_handlers( $outbox_id, $activity ) {
 		$outbox_item = \get_post( $outbox_id );
@@ -564,6 +602,8 @@ class Dispatcher {
 	 *
 	 * @param int      $outbox_id The Outbox item ID.
 	 * @param Activity $activity  The Activity that was just added to the Outbox.
+	 *
+	 * @return void
 	 */
 	public static function send_immediate_accept( $outbox_id, $activity ) {
 		$outbox_item = \get_post( $outbox_id );
@@ -573,6 +613,6 @@ class Dispatcher {
 		}
 
 		// Send to mentioned and replied-to users. Everyone other than followers.
-		self::send_to_additional_inboxes( $activity, $outbox_item->post_author, $outbox_item );
+		self::send_to_additional_inboxes( $activity, (int) $outbox_item->post_author, $outbox_item );
 	}
 }

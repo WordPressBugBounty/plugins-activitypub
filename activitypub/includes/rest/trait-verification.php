@@ -45,7 +45,13 @@ trait Verification {
 	 * @return bool|\WP_Error True if authorized, WP_Error otherwise.
 	 */
 	public function verify_signature( $request, $force_signature = false ) {
-		if ( 'HEAD' === $request->get_method() && ! $force_signature ) {
+		/*
+		 * The HEAD short-circuit exists so caches and link-checkers can probe public endpoints
+		 * without a signature. A seek request carries an `item` and answers with a Location that a
+		 * bare probe does not, so it must not ride the bypass; it is answered like the GET of the
+		 * same URL instead, which is where its Location comes from.
+		 */
+		if ( 'HEAD' === $request->get_method() && ! $force_signature && null === $request->get_param( 'item' ) ) {
 			return true;
 		}
 
@@ -80,19 +86,23 @@ trait Verification {
 			return true;
 		}
 
-		// POST-Requests always have to be signed, GET-Requests only require a signature in secure mode or when forced.
-		if ( 'GET' !== $request->get_method() || use_authorized_fetch() || $force_signature ) {
-			$verified_key_id = Signature::verify_http_signature( $request );
-			if ( \is_wp_error( $verified_key_id ) ) {
+		/*
+		 * POSTs always have to be signed. Reads only require a signature in secure mode or when
+		 * forced: a HEAD reaching this point is a seek, and its Location is the one a GET of the same
+		 * URL hands out, so the two must be answered alike.
+		 */
+		if ( ! \in_array( $request->get_method(), array( 'GET', 'HEAD' ), true ) || use_authorized_fetch() || $force_signature ) {
+			$signer = Signature::verify_http_signature( $request );
+			if ( \is_wp_error( $signer ) ) {
 				return new \WP_Error(
 					'activitypub_signature_verification',
-					$verified_key_id->get_error_message(),
+					$signer->get_error_message(),
 					array( 'status' => 401 )
 				);
 			}
 
-			// Verify the signing key's host matches the activity actor's host.
-			$key_id_check = $this->verify_key_id( $request, $verified_key_id );
+			// Verify the signing key belongs to the activity actor.
+			$key_id_check = $this->verify_key_id( $request, $signer );
 			if ( \is_wp_error( $key_id_check ) ) {
 				return $key_id_check;
 			}
@@ -151,27 +161,28 @@ trait Verification {
 	}
 
 	/**
-	 * Check that the signature keyId and activity actor share the same host.
+	 * Check that the verified signing key belongs to the activity actor.
 	 *
-	 * Binds against the keyId that {@see Signature::verify_http_signature()} actually
-	 * verified, passed in by the caller. Re-parsing the headers here would be unsafe: a
-	 * request can present several signature labels (or a draft and an RFC 9421 header) with
-	 * different keyIds, and only the verifier knows which one validated.
+	 * Binds against the key owner that {@see Signature::verify_http_signature()} returns for the
+	 * signature that actually verified. Re-parsing the headers here would be unsafe: a request can
+	 * present several signature labels (or a draft and an RFC 9421 header) with different keyIds,
+	 * and only the verifier knows which one validated.
 	 *
-	 * Fails closed when either side has no parsable host. A non-URL keyId such as
-	 * `acct:mallory@attacker.example` resolves to a real key through WebFinger yet yields no host,
-	 * so treating "no host" as "nothing to check" would drop the only tie between the signing key
-	 * and the claimed actor. Both hosts must be present and equal.
+	 * The owner is the actor {@see \Activitypub\Collection\Remote_Actors::get_public_key()} took the key from, the stored
+	 * actor or the fetched one, and that lookup already requires it on the keyId's host. A keyId
+	 * with no host (an `acct:` keyId) gets no key there. So comparing the owner with the actor
+	 * also binds the hosts.
 	 *
 	 * @since 8.1.0
 	 * @since 9.0.0 Added the `$key_id` parameter; binds against the verified keyId.
 	 * @since 9.2.1 Reject a keyId or actor with no parsable host instead of allowing it.
+	 * @since 9.4.0 The second parameter is the verified key's owner; it has to be the actor.
 	 *
 	 * @param \WP_REST_Request $request The request object.
-	 * @param string|null      $key_id  The keyId that verified the signature.
+	 * @param string|null      $owner   The id of the actor that owns the verified key.
 	 * @return true|\WP_Error True if valid, WP_Error on mismatch.
 	 */
-	private function verify_key_id( $request, $key_id ) {
+	private function verify_key_id( $request, $owner ) {
 		$json  = $request->get_json_params();
 		$actor = isset( $json['actor'] ) ? object_to_uri( $json['actor'] ) : null;
 
@@ -180,12 +191,17 @@ trait Verification {
 			return true;
 		}
 
-		// The keyId and the actor must resolve to the same host; an identifier with no parsable
-		// host (e.g. an `acct:` keyId) is unbindable and therefore not an authorized one.
-		if ( ! is_same_host( $key_id, $actor ) ) {
+		/*
+		 * The same host is not enough: on a server where users hold their own keys, one user's
+		 * key would pass for another user on that server, so the key's owner has to be the actor.
+		 * The stored actor the owner may come from can be trusted because this check is what keeps
+		 * an Update from writing another actor's key into it. The host check fails closed on an
+		 * identifier without a host, which could otherwise match itself.
+		 */
+		if ( ! is_same_host( $owner, $actor ) || $owner !== $actor ) {
 			return new \WP_Error(
 				'activitypub_key_actor_mismatch',
-				\__( 'Signing key and activity actor must be on the same host.', 'activitypub' ),
+				\__( 'Signing key does not belong to the activity actor.', 'activitypub' ),
 				array( 'status' => 403 )
 			);
 		}
@@ -318,7 +334,24 @@ trait Verification {
 			return true;
 		}
 
-		// Ownership answers who the caller is; the scope answers what the caller was allowed to do with that identity.
-		return true === $this->verify_owner( $request ) && OAuth_Server::permits_scope( Scope::READ );
+		return $this->owner_may_read( $request );
+	}
+
+	/**
+	 * Whether the request comes from the actor's owner with permission to read.
+	 *
+	 * Ownership answers who the caller is; the scope answers what the caller was allowed to do with
+	 * that identity. An OAuth caller's identity is established from any valid bearer whatever it was
+	 * consented to, so reading owner-only material additionally requires the `read` scope. A
+	 * WordPress session is not scope-limited.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @param \WP_REST_Request $request The request object.
+	 * @return bool True if the owner may read owner-only material.
+	 */
+	protected function owner_may_read( $request ) {
+		// Cheap guard first: verify_owner() resolves the actor before reaching its own login check.
+		return \is_user_logged_in() && true === $this->verify_owner( $request ) && OAuth_Server::permits_scope( Scope::READ );
 	}
 }

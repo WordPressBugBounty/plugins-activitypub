@@ -19,6 +19,8 @@ use function Activitypub\home_host;
 class Settings_Fields {
 	/**
 	 * Initialize the settings fields.
+	 *
+	 * @return void
 	 */
 	public static function init() {
 		\add_action( 'load-settings_page_activitypub', array( self::class, 'register_settings_fields' ) );
@@ -26,6 +28,8 @@ class Settings_Fields {
 
 	/**
 	 * Register settings fields.
+	 *
+	 * @return void
 	 */
 	public static function register_settings_fields() {
 		// Add settings sections.
@@ -195,6 +199,8 @@ class Settings_Fields {
 
 	/**
 	 * Render actor mode field.
+	 *
+	 * @return void
 	 */
 	public static function render_actor_mode_field() {
 		$disabled = ( \defined( 'ACTIVITYPUB_SINGLE_USER_MODE' ) && ACTIVITYPUB_SINGLE_USER_MODE ) ||
@@ -259,6 +265,8 @@ class Settings_Fields {
 
 	/**
 	 * Render custom post content field.
+	 *
+	 * @return void
 	 */
 	public static function render_custom_post_content_field() {
 		$switch_url = \wp_nonce_url(
@@ -306,6 +314,8 @@ class Settings_Fields {
 
 	/**
 	 * Render max image attachments field.
+	 *
+	 * @return void
 	 */
 	public static function render_max_image_attachments_field() {
 		$value = \get_option( 'activitypub_max_image_attachments', ACTIVITYPUB_MAX_IMAGE_ATTACHMENTS );
@@ -333,6 +343,8 @@ class Settings_Fields {
 
 	/**
 	 * Render support post types field.
+	 *
+	 * @return void
 	 */
 	public static function render_support_post_types_field() {
 		$post_types           = \get_post_types( array( 'public' => true ), 'objects' );
@@ -357,6 +369,8 @@ class Settings_Fields {
 
 	/**
 	 * Render allow interactions field.
+	 *
+	 * @return void
 	 */
 	public static function render_allow_interactions_field() {
 		if ( \defined( 'ACTIVITYPUB_DISABLE_INCOMING_INTERACTIONS' ) && ACTIVITYPUB_DISABLE_INCOMING_INTERACTIONS ) {
@@ -367,6 +381,7 @@ class Settings_Fields {
 		$allow_likes   = \get_option( 'activitypub_allow_likes', '1' );
 		$allow_reposts = \get_option( 'activitypub_allow_reposts', '1' );
 		$auto_approve  = \get_option( 'activitypub_auto_approve_reactions', '0' );
+		$images        = \get_option( 'activitypub_allow_comment_images', '0' );
 		?>
 		<fieldset>
 			<p>
@@ -388,12 +403,21 @@ class Settings_Fields {
 					<?php \esc_html_e( 'Auto approve reactions', 'activitypub' ); ?>
 				</label>
 			</p>
+			<p>
+				<label>
+					<input type="checkbox" name="activitypub_allow_comment_images" value="1" <?php \checked( '1', $images ); ?> />
+					<?php \esc_html_e( 'Show images attached to replies', 'activitypub' ); ?>
+				</label>
+			</p>
+			<p class="description"><?php \esc_html_e( 'WordPress does not show images in comments. With this option, images that people attach to their Fediverse replies are shown below the comment text. Images that are not cached, for example with remote caching turned off, are loaded from the server of the person who replied.', 'activitypub' ); ?></p>
 		</fieldset>
 		<?php
 	}
 
 	/**
 	 * Render default quote policy field.
+	 *
+	 * @return void
 	 */
 	public static function render_default_quote_policy_field() {
 		$value = \get_option( 'activitypub_default_quote_policy', ACTIVITYPUB_INTERACTION_POLICY_ANYONE );
@@ -411,6 +435,8 @@ class Settings_Fields {
 
 	/**
 	 * Render default feature policy field.
+	 *
+	 * @return void
 	 */
 	public static function render_default_feature_policy_field() {
 		$value = \get_option( 'activitypub_default_feature_policy', ACTIVITYPUB_INTERACTION_POLICY_ME );
@@ -428,6 +454,8 @@ class Settings_Fields {
 
 	/**
 	 * Render use hashtags field.
+	 *
+	 * @return void
 	 */
 	public static function render_use_hashtags_field() {
 		$value = \get_option( 'activitypub_use_hashtags', '0' );
@@ -443,6 +471,8 @@ class Settings_Fields {
 
 	/**
 	 * Render use OpenGraph field.
+	 *
+	 * @return void
 	 */
 	public static function render_use_opengraph_field() {
 		$value = \get_option( 'activitypub_use_opengraph', '1' );
@@ -458,6 +488,8 @@ class Settings_Fields {
 
 	/**
 	 * Render attribution domains field.
+	 *
+	 * @return void
 	 */
 	public static function render_attribution_domains_field() {
 		$value = \get_option( 'activitypub_attribution_domains', home_host() );
@@ -475,6 +507,8 @@ class Settings_Fields {
 
 	/**
 	 * Render relays field.
+	 *
+	 * @return void
 	 */
 	public static function render_relays_field() {
 		$value = \get_option( 'activitypub_relays', array() );
@@ -506,6 +540,8 @@ class Settings_Fields {
 
 	/**
 	 * Render moderation section description.
+	 *
+	 * @return void
 	 */
 	public static function render_moderation_section_description() {
 		echo '<p>' . \esc_html__( 'Configure site-wide moderation settings. These blocks will affect all users and ActivityPub content on your site.', 'activitypub' ) . '</p>';
@@ -513,6 +549,8 @@ class Settings_Fields {
 
 	/**
 	 * Render site blocked domains field.
+	 *
+	 * @return void
 	 */
 	public static function render_site_blocked_domains_field() {
 		$blocked_domains = Moderation::get_site_blocks()['domains'];
@@ -567,6 +605,8 @@ class Settings_Fields {
 
 	/**
 	 * Render site blocked keywords field.
+	 *
+	 * @return void
 	 */
 	public static function render_site_blocked_keywords_field() {
 		$blocked_keywords = Moderation::get_site_blocks()['keywords'];
@@ -621,6 +661,8 @@ class Settings_Fields {
 
 	/**
 	 * Render blocklist subscriptions field.
+	 *
+	 * @return void
 	 */
 	public static function render_blocklist_subscriptions_field() {
 		$subscriptions = Blocklist_Subscriptions::get_all();

@@ -20,6 +20,8 @@ use function Activitypub\get_content_visibility;
 use function Activitypub\get_content_warning;
 use function Activitypub\get_enclosures;
 use function Activitypub\get_max_attachments;
+use function Activitypub\get_post_id;
+use function Activitypub\get_post_url;
 use function Activitypub\get_rest_url_by_path;
 use function Activitypub\is_post_publicly_queryable;
 use function Activitypub\is_single_user;
@@ -34,6 +36,8 @@ use function Activitypub\site_supports_blocks;
  * Currently supported are:
  *
  * - Activitypub\Activity\Base_Object
+ *
+ * @property \WP_Post $item The post being transformed.
  */
 class Post extends Base {
 	/**
@@ -53,7 +57,7 @@ class Post extends Base {
 	/**
 	 * The summary.
 	 *
-	 * @var string|null|false False indicates not yet computed.
+	 * @var string|false False indicates not yet computed.
 	 */
 	private $summary = false;
 
@@ -84,6 +88,15 @@ class Post extends Base {
 	 * @var string|array|null|false False indicates not yet computed.
 	 */
 	private $in_reply_to = false;
+
+	/**
+	 * The quoted object URI, or null once resolved to "not a quote".
+	 *
+	 * @since 9.4.0
+	 *
+	 * @var string|null|false
+	 */
+	private $quote = false;
 
 	/**
 	 * Transforms the WP_Post object to an ActivityPub Object
@@ -199,7 +212,7 @@ class Post extends Base {
 			return $blog_user;
 		}
 
-		$user = Actors::get_by_id( $this->item->post_author );
+		$user = Actors::get_by_id( (int) $this->item->post_author );
 
 		if ( $user && ! \is_wp_error( $user ) ) {
 			$this->actor_object = $user;
@@ -217,27 +230,13 @@ class Post extends Base {
 	 * or below the threshold are *legacy* and use their permalink as the ID,
 	 * which means a slug change effectively renames the federated object.
 	 *
-	 * Known limitation: a legacy post whose slug changes in the same save as
-	 * a soft-delete transition (e.g. publish → draft + new post_name) will
-	 * emit a Delete targeting the new permalink, while remote servers cached
-	 * the original. The trash case mitigates this via the `wp_trash_post`
-	 * hook caching the pre-transition URL in `_activitypub_canonical_url`,
-	 * but draft / pending / private / password-applied transitions do not.
-	 * If you maintain a site that pre-dates the ID migration, avoid editing
-	 * the slug in the same save as the visibility change.
+	 * On withdrawal, the saved canonical URL preserves the published identity
+	 * even if the status change also changes the permalink or slug.
 	 *
 	 * @return string The Posts ID.
 	 */
 	public function get_id() {
-		$last_legacy_id = (int) \get_option( 'activitypub_last_post_with_permalink_as_id', 0 );
-		$post_id        = (int) $this->item->ID;
-
-		if ( $post_id > $last_legacy_id ) {
-			// Generate URI based on post ID.
-			return \add_query_arg( 'p', $post_id, \home_url( '/' ) );
-		}
-
-		return $this->get_url();
+		return get_post_id( $this->item->ID );
 	}
 
 	/**
@@ -246,26 +245,7 @@ class Post extends Base {
 	 * @return string The Posts URL.
 	 */
 	public function get_url() {
-		$post = $this->item;
-
-		switch ( \get_post_status( $post ) ) {
-			case 'trash':
-				$permalink = \get_post_meta( $post->ID, '_activitypub_canonical_url', true );
-				break;
-			case 'draft':
-				// Get_sample_permalink is in wp-admin, not always loaded.
-				if ( ! \function_exists( '\get_sample_permalink' ) ) {
-					require_once ABSPATH . 'wp-admin/includes/post.php';
-				}
-				$sample    = \get_sample_permalink( $post->ID );
-				$permalink = \str_replace( array( '%pagename%', '%postname%' ), $sample[1], $sample[0] );
-				break;
-			default:
-				$permalink = \get_permalink( $post );
-				break;
-		}
-
-		return \esc_url_raw( $permalink );
+		return get_post_url( $this->item );
 	}
 
 	/**
@@ -333,11 +313,23 @@ class Post extends Base {
 	}
 
 	/**
-	 * Returns an Icon, based on the Featured Image with a fallback to the site-icon.
+	 * Returns a poster image for a media attachment, based on the Featured Image with a
+	 * fallback to the site-icon.
 	 *
-	 * @return array|null The Icon or null if no icon is available.
+	 * Stays `protected` rather than `private`: the podcast integrations extend this class and
+	 * call it, and {@see Base::transform_attachment()} calls it from the parent.
+	 *
+	 * Deliberately not called `get_icon()`: {@see Base::transform_object_properties()} maps each
+	 * getter onto the property of the same name, and FEP-b2b8 reserves `icon` for the author's
+	 * avatar.
+	 *
+	 * @since 9.4.0 Renamed from `get_icon()`, so it no longer maps onto the object.
+	 *
+	 * @see https://fediverse.codeberg.page/fep/fep/b2b8/
+	 *
+	 * @return array|null The poster image or null if none is available.
 	 */
-	protected function get_icon() {
+	protected function get_media_icon() {
 		$post_id = $this->item->ID;
 
 		// List post thumbnail first if this post has one.
@@ -695,6 +687,81 @@ class Post extends Base {
 		$this->in_reply_to = \array_values( \array_unique( $reply_urls ) );
 
 		return $this->in_reply_to;
+	}
+
+	/**
+	 * Returns the URI quoted by the first valid Quote block.
+	 *
+	 * @see https://codeberg.org/fediverse/fep/src/branch/main/fep/044f/fep-044f.md
+	 * @since 9.4.0
+	 *
+	 * @return string|null The quoted object URI, or null if there is none or the quote was rejected.
+	 */
+	public function get_quote() {
+		if ( false !== $this->quote ) {
+			return $this->quote;
+		}
+
+		$this->quote = null;
+
+		if ( ! site_supports_blocks() ) {
+			return $this->quote;
+		}
+
+		foreach ( \parse_blocks( $this->item->post_content ) as $block ) {
+			// Blocks whose URL failed the editor's ActivityPub check are not federated as quotes.
+			if ( 'activitypub/quote' === $block['blockName'] && ! empty( $block['attrs']['url'] ) && ( $block['attrs']['isValidActivityPub'] ?? true ) ) {
+				$this->quote = $block['attrs']['url'];
+				break;
+			}
+		}
+
+		// A rejection only covers the URL it was answered for; a new URL starts a new handshake.
+		if ( $this->quote && \get_post_meta( $this->item->ID, '_activitypub_quote_rejected', true ) && \get_post_meta( $this->item->ID, '_activitypub_quote_request', true ) === $this->quote ) {
+			$this->quote = null;
+		}
+
+		return $this->quote;
+	}
+
+	/**
+	 * Returns the Fedibird alias of the quote property.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @return string|null The quoted object URI.
+	 */
+	protected function get_quote_uri() {
+		return $this->get_quote();
+	}
+
+	/**
+	 * Returns the Misskey alias of the quote property.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @return string|null The quoted object URI.
+	 */
+	protected function get__misskey_quote() {
+		return $this->get_quote();
+	}
+
+	/**
+	 * Returns the QuoteAuthorization stamp URI once the quoted author accepted.
+	 *
+	 * @since 9.4.0
+	 *
+	 * @return string|null The stamp URI or null.
+	 */
+	protected function get_quote_authorization() {
+		$quote = $this->get_quote();
+
+		// The stamp authorizes exactly one quoted object; after a URL change it no longer applies.
+		if ( ! $quote || \get_post_meta( $this->item->ID, '_activitypub_quote_request', true ) !== $quote ) {
+			return null;
+		}
+
+		return \get_post_meta( $this->item->ID, '_activitypub_quote_authorization', true ) ?: null;
 	}
 
 	/**

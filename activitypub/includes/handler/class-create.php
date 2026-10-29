@@ -23,6 +23,8 @@ use function Activitypub\object_id_to_comment;
 class Create {
 	/**
 	 * Initialize the class, registering WordPress hooks.
+	 *
+	 * @return void
 	 */
 	public static function init() {
 		\add_action( 'activitypub_handled_inbox_create', array( self::class, 'handle_create' ), 10, 3 );
@@ -36,6 +38,8 @@ class Create {
 	 * @param array                          $activity        The activity-object.
 	 * @param int|int[]                      $user_ids        The id(s) of the local blog-user(s).
 	 * @param \Activitypub\Activity\Activity $activity_object Optional. The activity object. Default null.
+	 *
+	 * @return void
 	 */
 	public static function handle_create( $activity, $user_ids, $activity_object = null ) {
 		// Check for private and/or direct messages.
@@ -146,8 +150,18 @@ class Create {
 			return false;
 		}
 
-		if ( ! isset( $activity['object']['id'], $activity['object']['content'] ) ) {
+		if ( ! isset( $activity['object']['id'] ) ) {
 			return false;
+		}
+		if ( ! isset( $activity['object']['content'] ) ) {
+			/*
+			 * Image-only replies and quotes have something to show only when comment images are enabled;
+			 * other posts still need text. This runs before the signature check, so it leaves the host
+			 * checks to Interactions::add_comment().
+			 */
+			if ( ( ! is_activity_reply( $activity ) && ! is_quote_activity( $activity ) ) || ! Interactions::get_image_attachments( $activity['object'], false ) ) {
+				return false;
+			}
 		}
 
 		return $valid;
@@ -162,6 +176,8 @@ class Create {
 	 *
 	 * @param int                            $outbox_id The ID of the outbox activity.
 	 * @param \Activitypub\Activity\Activity $activity  The Activity object.
+	 *
+	 * @return void
 	 */
 	public static function maybe_unbury( $outbox_id, $activity ) {
 		if ( ! \in_array( $activity->get_type(), array( 'Create', 'Update' ), true ) ) {
